@@ -1,7 +1,7 @@
 import React from 'react'
 import { motion } from 'framer-motion'
 
-const TreeEdge = ({ source, target, isHovered }) => {
+const TreeEdge = ({ source, target, isHovered, isInActivePath }) => {
   // Calculate perpendicular vector for width
   const dx = target.x - source.x
   const dy = target.y - source.y
@@ -46,15 +46,21 @@ const TreeEdge = ({ source, target, isHovered }) => {
 
   const polygonPoints = points.map(p => `${p.x},${p.y}`).join(' ')
 
+  // Colors based on state (active path = golden, normal = emerald)
+  const glowColor = isInActivePath ? 'rgba(251, 191, 36, 0.2)' : 'rgba(52, 211, 153, 0.12)'
+  const mainColor = isInActivePath ? 'rgba(251, 191, 36, 0.5)' : 'rgba(52, 211, 153, 0.35)'
+  const lineColor = isInActivePath ? 'rgba(251, 191, 36, 0.8)' : 'rgba(52, 211, 153, 0.6)'
+  const particleColor = isInActivePath ? '#fbbf24' : '#34d399'
+
   return (
     <g>
       {/* Glow effect - exponentially tapered */}
       <motion.polygon
         points={polygonPoints}
-        fill="rgba(52, 211, 153, 0.12)"
+        fill={glowColor}
         stroke="none"
         animate={{
-          opacity: isHovered ? [0.15, 0.35, 0.15] : 0.12,
+          opacity: isHovered || isInActivePath ? [0.2, 0.4, 0.2] : 0.15,
         }}
         transition={{
           duration: 2,
@@ -66,10 +72,10 @@ const TreeEdge = ({ source, target, isHovered }) => {
       {/* Main tapered shape */}
       <motion.polygon
         points={polygonPoints}
-        fill="rgba(52, 211, 153, 0.35)"
+        fill={mainColor}
         stroke="none"
         animate={{
-          opacity: isHovered ? [0.4, 0.7, 0.4] : 0.4,
+          opacity: isHovered || isInActivePath ? [0.5, 0.8, 0.5] : 0.4,
         }}
         transition={{
           duration: 2,
@@ -84,8 +90,8 @@ const TreeEdge = ({ source, target, isHovered }) => {
         y1={source.y}
         x2={target.x}
         y2={target.y}
-        stroke="rgba(52, 211, 153, 0.6)"
-        strokeWidth={isHovered ? 1.2 : 0.8}
+        stroke={lineColor}
+        strokeWidth={isHovered || isInActivePath ? 1.5 : 0.8}
         strokeLinecap="round"
         animate={{
           strokeDashoffset: isHovered ? [0, 20] : 0,
@@ -100,13 +106,13 @@ const TreeEdge = ({ source, target, isHovered }) => {
         }}
       />
 
-      {/* Animated particle when hovered - shrinks exponentially */}
-      {isHovered && (
+      {/* Animated particle when hovered or in active path */}
+      {(isHovered || isInActivePath) && (
         <motion.circle
           cx={source.x}
           cy={source.y}
           r="5"
-          fill="#34d399"
+          fill={particleColor}
           animate={{
             cx: [source.x, target.x],
             cy: [source.y, target.y],

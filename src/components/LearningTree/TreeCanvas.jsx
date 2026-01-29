@@ -1,18 +1,68 @@
-import React, { useState, useRef, useEffect } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
+import React, { useState, useRef, useEffect, forwardRef, useImperativeHandle } from 'react'
+import { motion } from 'framer-motion'
 import TreeNode from './TreeNode'
 import TreeEdge from './TreeEdge'
 import ParallaxBackground from './ParallaxBackground'
+import { getActivePath } from '../../lib/contextEngine'
 
-const TreeCanvas = () => {
+const STORAGE_KEY = 'forest-learning-tree'
+
+const TreeCanvas = forwardRef(({
+  nodes,
+  edges,
+  setNodes,
+  setEdges,
+  activeNodeId,
+  setActiveNodeId,
+  activePath,
+  setActivePath,
+}, ref) => {
   const canvasRef = useRef(null)
-  const [nodes, setNodes] = useState([])
-  const [edges, setEdges] = useState([])
   const [camera, setCamera] = useState({ x: 0, y: 0, scale: 1 })
   const [isPanning, setIsPanning] = useState(false)
   const [panStart, setPanStart] = useState({ x: 0, y: 0 })
   const [hoveredNode, setHoveredNode] = useState(null)
-  const [showPlusMenu, setShowPlusMenu] = useState(null)
+
+  // Load camera from localStorage on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY)
+      if (saved) {
+        const data = JSON.parse(saved)
+        setCamera(data.camera || { x: 0, y: 0, scale: 1 })
+      }
+    } catch (error) {
+      console.error('Failed to load camera from localStorage:', error)
+    }
+  }, [])
+
+  // Save camera to localStorage whenever it changes
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY)
+      const data = saved ? JSON.parse(saved) : {}
+      data.camera = camera
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
+    } catch (error) {
+      console.error('Failed to save camera to localStorage:', error)
+    }
+  }, [camera])
+
+  // Expose methods to parent
+  useImperativeHandle(ref, () => ({
+    centerOnNode: (nodeId) => {
+      const node = nodes.find(n => n.id === nodeId)
+      if (node && canvasRef.current) {
+        const rect = canvasRef.current.getBoundingClientRect()
+        setCamera(prev => ({
+          ...prev,
+          x: rect.width / 2 - node.position.x * prev.scale,
+          y: rect.height / 2 - node.position.y * prev.scale,
+        }))
+      }
+    },
+    getCamera: () => camera,
+  }))
 
   // Generate unique ID
   const generateId = () => `node_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
@@ -21,12 +71,6 @@ const TreeCanvas = () => {
   const handleDoubleClick = (e) => {
     // Don't create node if clicking on an existing node
     if (e.target.closest('.tree-node')) return
-
-    // Close menu if open
-    if (showPlusMenu) {
-      setShowPlusMenu(null)
-      return
-    }
 
     const rect = canvasRef.current.getBoundingClientRect()
     const x = (e.clientX - rect.left - camera.x) / camera.scale
@@ -37,20 +81,23 @@ const TreeCanvas = () => {
       label: `Node ${nodes.length + 1}`,
       position: { x, y },
       parentId: null,
+      question: '',
+      aiResponse: '',
+      contextAnchor: '',
+      highlights: [],
     }
 
     setNodes([...nodes, newNode])
+
+    // Auto-select the new node
+    setActiveNodeId(newNode.id)
+    setActivePath([])
   }
 
   // Handle canvas panning
   const handleMouseDown = (e) => {
     // Only pan if clicking on the canvas itself (not on nodes)
     if (e.target.closest('.tree-node')) return
-
-    // Close plus menu when clicking on empty canvas
-    if (showPlusMenu) {
-      setShowPlusMenu(null)
-    }
 
     setIsPanning(true)
     setPanStart({ x: e.clientX, y: e.clientY })
@@ -106,34 +153,6 @@ const TreeCanvas = () => {
     }
   }, [camera])
 
-  // Create child node
-  const handleCreateChild = (parentId) => {
-    const parent = nodes.find(n => n.id === parentId)
-    if (!parent) return
-
-    const angle = Math.random() * Math.PI * 2
-    const distance = 150
-    const newNode = {
-      id: generateId(),
-      label: `Node ${nodes.length + 1}`,
-      position: {
-        x: parent.position.x + Math.cos(angle) * distance,
-        y: parent.position.y + Math.sin(angle) * distance,
-      },
-      parentId: parentId,
-    }
-
-    const newEdge = {
-      id: `edge_${parentId}_${newNode.id}`,
-      sourceId: parentId,
-      targetId: newNode.id,
-    }
-
-    setNodes([...nodes, newNode])
-    setEdges([...edges, newEdge])
-    setShowPlusMenu(null)
-  }
-
   // Update node position
   const handleNodeDrag = (nodeId, newPosition) => {
     setNodes(nodes.map(n =>
@@ -148,27 +167,25 @@ const TreeCanvas = () => {
     ))
   }
 
-  // Click node to show plus menu
+  // Click node to select
   const handleNodeClick = (nodeId) => {
-    setShowPlusMenu(showPlusMenu === nodeId ? null : nodeId)
-  }
-
-  // Delete node and its children
-  const handleDeleteNode = (nodeId) => {
-    const deleteRecursive = (id) => {
-      const children = nodes.filter(n => n.parentId === id)
-      children.forEach(child => deleteRecursive(child.id))
-      setNodes(prev => prev.filter(n => n.id !== id))
-      setEdges(prev => prev.filter(e => e.sourceId !== id && e.targetId !== id))
+    if (activeNodeId === nodeId) {
+      // Clicking the same node again - deselect
+      setActiveNodeId(null)
+      setActivePath([])
+    } else {
+      // Select this node
+      setActiveNodeId(nodeId)
+      // Calculate and highlight active path
+      const pathEdgeIds = getActivePath(nodeId, nodes, edges)
+      setActivePath(pathEdgeIds)
     }
-    deleteRecursive(nodeId)
-    setShowPlusMenu(null)
   }
 
   return (
     <div
       ref={canvasRef}
-      className="fixed inset-0 bg-forest-darker overflow-hidden"
+      className="w-full h-full bg-forest-darker overflow-hidden relative"
       style={{ cursor: isPanning ? 'grabbing' : 'grab' }}
       onDoubleClick={handleDoubleClick}
       onMouseDown={handleMouseDown}
@@ -209,12 +226,15 @@ const TreeCanvas = () => {
             const target = nodes.find(n => n.id === edge.targetId)
             if (!source || !target) return null
 
+            const isInActivePath = activePath.includes(edge.id)
+
             return (
               <TreeEdge
                 key={edge.id}
                 source={source.position}
                 target={target.position}
                 isHovered={hoveredNode === edge.sourceId || hoveredNode === edge.targetId}
+                isInActivePath={isInActivePath}
               />
             )
           })}
@@ -229,52 +249,10 @@ const TreeCanvas = () => {
             onClick={handleNodeClick}
             onHover={setHoveredNode}
             onLabelChange={handleLabelChange}
-            isSelected={showPlusMenu === node.id}
+            isSelected={activeNodeId === node.id}
             scale={camera.scale}
           />
         ))}
-
-        {/* Plus Menu */}
-        <AnimatePresence>
-          {showPlusMenu && nodes.find(n => n.id === showPlusMenu) && (
-            <motion.div
-              initial={{ scale: 0, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0, opacity: 0 }}
-              transition={{ type: 'spring', stiffness: 300, damping: 20 }}
-              className="absolute z-50 bg-forest-card/90 backdrop-blur-md border border-forest-emerald rounded-lg p-2 shadow-xl pointer-events-auto"
-              style={{
-                left: nodes.find(n => n.id === showPlusMenu).position.x + 60,
-                top: nodes.find(n => n.id === showPlusMenu).position.y - 40,
-              }}
-              onClick={(e) => e.stopPropagation()}
-              onMouseDown={(e) => e.stopPropagation()}
-            >
-              <button
-                onClick={(e) => {
-                  e.stopPropagation()
-                  handleCreateChild(showPlusMenu)
-                }}
-                onMouseDown={(e) => e.stopPropagation()}
-                className="px-3 py-2 text-forest-emerald hover:bg-forest-emerald/20 rounded transition-colors duration-100 flex items-center gap-2 w-full"
-              >
-                <span className="text-xl">+</span>
-                <span className="text-sm">Add Child</span>
-              </button>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation()
-                  handleDeleteNode(showPlusMenu)
-                }}
-                onMouseDown={(e) => e.stopPropagation()}
-                className="px-3 py-2 text-red-400 hover:bg-red-500/20 rounded transition-colors duration-100 flex items-center gap-2 mt-1 w-full"
-              >
-                <span className="text-xl">×</span>
-                <span className="text-sm">Delete</span>
-              </button>
-            </motion.div>
-          )}
-        </AnimatePresence>
       </div>
 
       {/* Instructions Overlay */}
@@ -285,23 +263,20 @@ const TreeCanvas = () => {
             animate={{ opacity: 1, y: 0 }}
             className="text-forest-light-gray"
           >
-            <p className="text-2xl font-semibold mb-2 text-forest-emerald">Welcome to your Learning Tree</p>
-            <p className="text-lg">Double-click anywhere to create your first node</p>
-            <p className="text-sm mt-2 opacity-70">Click nodes to add children • Drag to move • Scroll to zoom</p>
+            <p className="text-xl font-semibold mb-2 text-forest-emerald">Start your Learning Tree</p>
+            <p className="text-base">Double-click anywhere to create your first node</p>
           </motion.div>
         </div>
       )}
 
-      {/* Controls Info */}
-      <div className="absolute bottom-4 left-4 bg-forest-card/80 backdrop-blur-md border border-forest-border rounded-lg p-3 text-sm text-forest-light-gray">
-        <div className="flex flex-col gap-1">
-          <div><span className="text-forest-emerald">Nodes:</span> {nodes.length}</div>
-          <div><span className="text-forest-emerald">Zoom:</span> {(camera.scale * 100).toFixed(0)}%</div>
-          <div className="text-xs opacity-70 mt-1">Double-click to create</div>
-        </div>
+      {/* Zoom indicator */}
+      <div className="absolute bottom-4 left-4 bg-forest-card/80 backdrop-blur-md border border-forest-border rounded-lg px-3 py-2 text-xs text-forest-light-gray">
+        <span className="text-forest-emerald">{(camera.scale * 100).toFixed(0)}%</span>
       </div>
     </div>
   )
-}
+})
+
+TreeCanvas.displayName = 'TreeCanvas'
 
 export default TreeCanvas

@@ -6,6 +6,9 @@ A dark, minimalistic React web app with an Obsidian-inspired design. Forest feat
 
 - 🌲 **Dark Minimalistic Design** - Obsidian-inspired dark theme with emerald and teal accents
 - 🧠 **Animated Knowledge Graph** - Dynamic canvas-based background with connected nodes
+- 🤖 **AI-Powered Learning Tree** - Interactive infinite canvas with OpenAI integration
+- 🎯 **Selective Branching** - Create child concepts from selected text in AI responses
+- 🌐 **Context Inheritance** - AI understands your full learning path
 - 🔐 **Secure Authentication** - Supabase-powered login/signup with form validation
 - 🏠 **Beautiful Home Page** - Hero section with feature showcase
 - ⚡ **Fast & Responsive** - Built with Vite and React for optimal performance
@@ -13,6 +16,7 @@ A dark, minimalistic React web app with an Obsidian-inspired design. Forest feat
 - 📱 **Mobile Friendly** - Fully responsive design that works on all devices
 - ✨ **Modern UX** - Password strength indicator, form validation, and smooth transitions
 - 🔒 **Protected Routes** - Dashboard accessible only to authenticated users
+- 💾 **Auto-Save** - Tree structure persists to localStorage
 
 ## Tech Stack
 
@@ -39,11 +43,16 @@ A dark, minimalistic React web app with an Obsidian-inspired design. Forest feat
 npm install
 ```
 
-2. Set up Supabase:
-   - Create a Supabase project at [supabase.com](https://supabase.com)
+2. Set up environment variables:
    - Copy `.env.example` to `.env`
-   - Add your Supabase credentials to `.env`
-   - See `SUPABASE_SETUP.md` for detailed instructions
+   - **Supabase** (for authentication):
+     - Create project at [supabase.com](https://supabase.com)
+     - Add credentials to `.env`
+     - See `SUPABASE_SETUP.md` for details
+   - **OpenAI** (for Learning Tree AI):
+     - Get API key at [platform.openai.com](https://platform.openai.com)
+     - Add `VITE_OPENAI_API_KEY` to `.env`
+     - See `AI_INTEGRATION.md` for details
 
 3. Start the development server:
 ```bash
@@ -132,16 +141,36 @@ colors: {
 - AI-powered recommendations
 - Knowledge graph visualization
 
+## Documentation
+
+- **[SUPABASE_SETUP.md](SUPABASE_SETUP.md)** - Authentication setup guide
+- **[AI_INTEGRATION.md](AI_INTEGRATION.md)** - AI-powered Learning Tree guide
+- **[LEARNING_TREE.md](LEARNING_TREE.md)** - Interactive canvas features
+
+## AI Learning Tree Features
+
+The Learning Tree (`/tree`) is a powerful AI-integrated infinite canvas:
+
+- **Contextual AI Tutor**: Ask questions and get responses that build on your learning path
+- **Selective Branching**: Select text in AI responses to create focused child nodes
+- **Heritage System**: AI remembers the full path from root to current concept
+- **Visual Path**: Golden glow shows your learning journey from root to active node
+- **Expansion Ideas**: AI suggests 3 related concepts to explore
+- **Auto-Save**: Everything persists to localStorage
+- **Infinite Canvas**: Pan, zoom, and organize your knowledge universe
+
+See [AI_INTEGRATION.md](AI_INTEGRATION.md) for complete guide.
+
 ## Future Development
 
-- Backend API integration
-- Real authentication with JWT
-- User profile management
-- Course content and lessons
-- Interactive knowledge graph navigation
-- AI-powered learning recommendations
-- Progress tracking and analytics
-- Social features and collaboration
+- Streaming AI responses
+- Multi-provider AI support (Claude, local models)
+- Node types and categories
+- Export/import trees
+- Collaborative editing
+- Voice input
+- Smart auto-layout
+- Search across tree
 
 ## License
 

@@ -39,3 +39,99 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #34d399;
 }
+
+/* Markdown prose styling for AI responses */
+.prose-invert {
+  color: #e5e7eb;
+  user-select: text;
+  -webkit-user-select: text;
+  -moz-user-select: text;
+  -ms-user-select: text;
+}
+
+.select-text,
+.select-text * {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+  -moz-user-select: text !important;
+  -ms-user-select: text !important;
+}
+
+.prose-invert h1,
+.prose-invert h2,
+.prose-invert h3 {
+  color: #ffffff;
+  font-weight: 600;
+  margin-top: 1em;
+  margin-bottom: 0.5em;
+}
+
+.prose-invert h1 {
+  font-size: 1.5em;
+}
+
+.prose-invert h2 {
+  font-size: 1.3em;
+}
+
+.prose-invert h3 {
+  font-size: 1.1em;
+}
+
+.prose-invert p {
+  margin-bottom: 0.75em;
+  line-height: 1.6;
+}
+
+.prose-invert ul,
+.prose-invert ol {
+  padding-left: 1.5em;
+  margin-bottom: 0.75em;
+}
+
+.prose-invert li {
+  margin-bottom: 0.25em;
+}
+
+.prose-invert code {
+  background: rgba(52, 211, 153, 0.1);
+  color: #34d399;
+  padding: 0.2em 0.4em;
+  border-radius: 0.25em;
+  font-size: 0.9em;
+}
+
+.prose-invert pre {
+  background: #0a0f0d;
+  border: 1px solid #1f2d27;
+  border-radius: 0.5em;
+  padding: 1em;
+  overflow-x: auto;
+  margin-bottom: 0.75em;
+}
+
+.prose-invert pre code {
+  background: none;
+  padding: 0;
+}
+
+.prose-invert strong {
+  color: #34d399;
+  font-weight: 600;
+}
+
+.prose-invert a {
+  color: #14b8a6;
+  text-decoration: underline;
+}
+
+.prose-invert a:hover {
+  color: #34d399;
+}
+
+.prose-invert blockquote {
+  border-left: 3px solid #34d399;
+  padding-left: 1em;
+  color: #9ca3af;
+  font-style: italic;
+}

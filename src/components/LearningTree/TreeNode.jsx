@@ -1,7 +1,15 @@
 import React, { useState } from 'react'
 import { motion } from 'framer-motion'
 
-const TreeNode = ({ node, onDrag, onClick, onHover, isSelected, scale, onLabelChange }) => {
+const TreeNode = ({
+  node,
+  onDrag,
+  onClick,
+  onHover,
+  isSelected,
+  scale,
+  onLabelChange,
+}) => {
   const [isDragging, setIsDragging] = useState(false)
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
   const [isEditing, setIsEditing] = useState(false)
@@ -66,6 +74,9 @@ const TreeNode = ({ node, onDrag, onClick, onHover, isSelected, scale, onLabelCh
     }
   }, [isDragging, dragStart])
 
+  // Node has AI content
+  const hasContent = !!node.aiResponse
+
   return (
     <motion.div
       className="absolute cursor-pointer tree-node"
@@ -85,33 +96,35 @@ const TreeNode = ({ node, onDrag, onClick, onHover, isSelected, scale, onLabelCh
       onDoubleClick={handleDoubleClick}
       onMouseEnter={() => onHover(node.id)}
       onMouseLeave={() => onHover(null)}
-      whileHover={{ scale: 1.05 }}
-      animate={{
-        scale: isSelected ? 1.1 : 1,
-      }}
-      transition={{ type: 'spring', stiffness: 300, damping: 20 }}
     >
       {/* Circular Node */}
-      <div
+      <motion.div
+        whileHover={{ scale: 1.1 }}
+        whileTap={{ scale: 0.95 }}
         className={`
-          relative w-12 h-12
-          bg-forest-card/60 backdrop-blur-md
-          border-2 ${isSelected ? 'border-forest-emerald' : 'border-forest-border'}
-          rounded-full shadow-xl
-          transition-all duration-100
+          relative w-14 h-14
+          bg-forest-card/80 backdrop-blur-md
+          border-2 ${isSelected ? 'border-forest-emerald shadow-lg shadow-forest-emerald/30' : 'border-forest-border'}
+          rounded-full
+          transition-all duration-150
           flex items-center justify-center
         `}
       >
-        {/* Glowing effect */}
-        <div className="absolute inset-0 rounded-full bg-gradient-to-br from-forest-emerald/20 to-forest-teal/20 opacity-50" />
+        {/* Glowing gradient background */}
+        <div className={`
+          absolute inset-0 rounded-full 
+          bg-gradient-to-br from-forest-emerald/30 to-forest-teal/20 
+          ${isSelected ? 'opacity-80' : 'opacity-40'}
+          transition-opacity duration-150
+        `} />
 
         {/* Pulse animation when selected */}
         {isSelected && (
           <motion.div
             className="absolute inset-0 rounded-full border-2 border-forest-emerald"
             animate={{
-              scale: [1, 1.3, 1],
-              opacity: [0.5, 0, 0.5],
+              scale: [1, 1.4, 1],
+              opacity: [0.6, 0, 0.6],
             }}
             transition={{
               duration: 2,
@@ -121,16 +134,39 @@ const TreeNode = ({ node, onDrag, onClick, onHover, isSelected, scale, onLabelCh
           />
         )}
 
-        {/* Center glow dot */}
-        <div className="relative z-10 w-3 h-3 bg-forest-emerald rounded-full shadow-lg shadow-forest-emerald/50" />
-      </div>
+        {/* Center indicator */}
+        <div className={`
+          relative z-10 w-4 h-4 rounded-full shadow-lg
+          ${hasContent
+            ? 'bg-forest-emerald shadow-forest-emerald/50'
+            : 'bg-forest-gray/50 shadow-forest-gray/30'
+          }
+          ${isSelected ? 'scale-110' : ''}
+          transition-all duration-150
+        `} />
 
-      {/* Label - inside or outside based on zoom */}
+        {/* Content indicator ring */}
+        {hasContent && (
+          <motion.div
+            className="absolute inset-1 rounded-full border border-forest-emerald/40"
+            animate={{
+              opacity: [0.4, 0.8, 0.4],
+            }}
+            transition={{
+              duration: 3,
+              repeat: Infinity,
+              ease: 'easeInOut',
+            }}
+          />
+        )}
+      </motion.div>
+
+      {/* Label */}
       {textOutside ? (
-        // Text outside node when zoomed out
+        // Text beside node when zoomed out
         <div
-          className="absolute left-16 top-1/2 transform -translate-y-1/2 whitespace-nowrap pointer-events-auto"
-          style={{ minWidth: '100px' }}
+          className="absolute left-18 top-1/2 transform -translate-y-1/2 whitespace-nowrap pointer-events-auto"
+          style={{ left: '64px' }}
         >
           {isEditing ? (
             <input
@@ -141,19 +177,23 @@ const TreeNode = ({ node, onDrag, onClick, onHover, isSelected, scale, onLabelCh
               onKeyDown={handleKeyDown}
               onClick={(e) => e.stopPropagation()}
               autoFocus
-              className="bg-forest-card/80 backdrop-blur-md border border-forest-emerald text-white text-xs px-2 py-1 rounded outline-none"
+              className="bg-forest-card/90 backdrop-blur-md border border-forest-emerald text-white text-xs px-2 py-1 rounded-lg outline-none"
             />
           ) : (
-            <div className="bg-forest-card/80 backdrop-blur-md border border-forest-border text-white text-xs px-2 py-1 rounded">
+            <div className={`
+              bg-forest-card/90 backdrop-blur-md border text-white text-xs px-2 py-1 rounded-lg
+              ${isSelected ? 'border-forest-emerald/50' : 'border-forest-border'}
+              transition-colors duration-150
+            `}>
               {node.label}
             </div>
           )}
         </div>
       ) : (
-        // Text inside/below node when zoomed in
+        // Text below node when zoomed in
         <div
           className="absolute left-1/2 transform -translate-x-1/2 whitespace-nowrap pointer-events-auto"
-          style={{ top: '56px' }}
+          style={{ top: '64px' }}
         >
           {isEditing ? (
             <input
@@ -164,10 +204,14 @@ const TreeNode = ({ node, onDrag, onClick, onHover, isSelected, scale, onLabelCh
               onKeyDown={handleKeyDown}
               onClick={(e) => e.stopPropagation()}
               autoFocus
-              className="bg-forest-card/80 backdrop-blur-md border border-forest-emerald text-white text-sm px-2 py-1 rounded outline-none text-center"
+              className="bg-forest-card/90 backdrop-blur-md border border-forest-emerald text-white text-sm px-3 py-1.5 rounded-lg outline-none text-center"
             />
           ) : (
-            <div className="text-white text-sm font-medium text-center">
+            <div className={`
+              text-white text-sm font-medium text-center px-2 py-1 rounded-lg
+              ${isSelected ? 'bg-forest-card/80 border border-forest-emerald/30' : ''}
+              transition-all duration-150
+            `}>
               {node.label}
             </div>
           )}
