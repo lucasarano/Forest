@@ -24,7 +24,7 @@ const KnowledgeGraph = ({ opacity = 0.3 }) => {
         y: Math.random() * canvas.height,
         vx: (Math.random() - 0.5) * 0.3,
         vy: (Math.random() - 0.5) * 0.3,
-        radius: Math.random() * 2 + 1.5,
+        radius: Math.random() * 2.5 + 3.5,
       })
     }
 
@@ -97,24 +97,11 @@ const KnowledgeGraph = ({ opacity = 0.3 }) => {
         })
       })
 
-      // Draw nodes on top
+      // Draw nodes on top (solid color)
       nodes.forEach((node) => {
-        // Outer glow
-        ctx.beginPath()
-        ctx.arc(node.x, node.y, node.radius + 2, 0, Math.PI * 2)
-        ctx.fillStyle = `rgba(52, 211, 153, ${opacity * 0.4})`
-        ctx.fill()
-
-        // Main node
         ctx.beginPath()
         ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2)
-        ctx.fillStyle = `rgba(52, 211, 153, ${opacity})`
-        ctx.fill()
-
-        // Inner bright center
-        ctx.beginPath()
-        ctx.arc(node.x, node.y, node.radius * 0.5, 0, Math.PI * 2)
-        ctx.fillStyle = `rgba(180, 255, 220, ${opacity * 0.8})`
+        ctx.fillStyle = `rgba(52, 211, 153, ${Math.min(opacity + 0.2, 1)})`
         ctx.fill()
       })
 

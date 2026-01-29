@@ -1,35 +1,145 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { motion } from 'framer-motion'
-import { Brain, BookOpen, Target, Sparkles, ArrowRight } from 'lucide-react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { ArrowRight } from 'lucide-react'
 import KnowledgeGraph from '../components/KnowledgeGraph'
 import Logo from '../components/Logo'
 import Button from '../components/Button'
 
-const Home = () => {
-  const features = [
-    {
-      icon: Brain,
-      title: 'AI-Powered Learning',
-      description: 'Personalized learning paths adapted to your pace and style'
-    },
-    {
-      icon: BookOpen,
-      title: 'Rich Content',
-      description: 'Comprehensive courses across multiple subjects and skills'
-    },
-    {
-      icon: Target,
-      title: 'Goal Tracking',
-      description: 'Set and achieve your learning goals with smart milestones'
-    },
-    {
-      icon: Sparkles,
-      title: 'Knowledge Mapping',
-      description: 'Visualize connections between concepts you learn'
-    }
-  ]
+/** Animation: question mark transforms into a node (concept) - faster transition */
+const QuestionToNodeAnimation = () => {
+  const [phase, setPhase] = useState('question')
 
+  React.useEffect(() => {
+    const t = setInterval(() => {
+      setPhase((p) => (p === 'question' ? 'node' : 'question'))
+    }, 1800)
+    return () => clearInterval(t)
+  }, [])
+
+  return (
+    <div className="relative w-24 h-24 flex items-center justify-center">
+      <AnimatePresence mode="wait">
+        {phase === 'question' ? (
+          <motion.div
+            key="question"
+            initial={{ opacity: 0, scale: 0.5 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.3 }}
+            transition={{ duration: 0.25 }}
+            className="absolute text-5xl xl:text-6xl font-bold text-forest-emerald"
+          >
+            ?
+          </motion.div>
+        ) : (
+          <motion.div
+            key="node"
+            initial={{ opacity: 0, scale: 0 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0 }}
+            transition={{ duration: 0.25 }}
+            className="absolute w-10 h-10 xl:w-12 xl:h-12 rounded-full bg-forest-emerald shadow-lg shadow-forest-emerald/50"
+          />
+        )}
+      </AnimatePresence>
+    </div>
+  )
+}
+
+/** Bronze, Silver, Gold nodes - more questions = stronger node */
+const BronzeSilverGoldAnimation = () => {
+  const nodes = [
+    { color: 'bg-amber-700', shadow: 'shadow-amber-700/50', label: 'Bronze', size: 'w-6 h-6' },
+    { color: 'bg-gray-400', shadow: 'shadow-gray-400/50', label: 'Silver', size: 'w-8 h-8' },
+    { color: 'bg-amber-400', shadow: 'shadow-amber-400/50', label: 'Gold', size: 'w-10 h-10' },
+  ]
+  return (
+    <div className="flex items-end justify-center gap-2 w-full max-w-[96px] min-h-[80px]">
+      {nodes.map((node, i) => (
+        <motion.div
+          key={node.label}
+          initial={{ scale: 0, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          transition={{ duration: 0.4, delay: i * 0.35 }}
+          className={`rounded-full shrink-0 ${node.color} ${node.shadow} shadow-lg ${node.size}`}
+          title={node.label}
+        />
+      ))}
+    </div>
+  )
+}
+
+/** Animation: nodes appear and grow with connections (forest building) */
+const FOREST_NODES = [
+  { x: 50, y: 50, delay: 0 },
+  { x: 20, y: 25, delay: 0.2 },
+  { x: 80, y: 25, delay: 0.3 },
+  { x: 15, y: 70, delay: 0.4 },
+  { x: 85, y: 70, delay: 0.5 },
+  { x: 50, y: 15, delay: 0.1 },
+  { x: 50, y: 85, delay: 0.6 },
+]
+
+// Pairs of node indices to connect (center=0, then clockwise/top)
+const FOREST_EDGES = [
+  [0, 1], [0, 2], [0, 3], [0, 4], [0, 5], [0, 6],
+  [1, 3], [2, 4], [5, 1], [5, 2], [6, 3], [6, 4],
+]
+
+const ForestGrowingAnimation = () => {
+  const [key, setKey] = useState(0)
+  const size = 96 // content area inside grey card (128 - 32 padding)
+  React.useEffect(() => {
+    const t = setInterval(() => setKey((k) => k + 1), 3200)
+    return () => clearInterval(t)
+  }, [])
+
+  const nodePx = (pct) => (pct / 100) * size
+
+  return (
+    <div className="relative" style={{ width: size, height: size }}>
+      {/* Connection lines */}
+      <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ width: size, height: size }}>
+        {FOREST_EDGES.map(([a, b], i) => (
+          <motion.line
+            key={`${key}-line-${i}`}
+            x1={nodePx(FOREST_NODES[a].x)}
+            y1={nodePx(FOREST_NODES[a].y)}
+            x2={nodePx(FOREST_NODES[b].x)}
+            y2={nodePx(FOREST_NODES[b].y)}
+            stroke="rgba(52, 211, 153, 0.5)"
+            strokeWidth="1.5"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.4, delay: Math.max(FOREST_NODES[a].delay, FOREST_NODES[b].delay) + 0.1 }}
+          />
+        ))}
+      </svg>
+      {FOREST_NODES.map((node, i) => (
+        <motion.div
+          key={`${key}-${i}`}
+          className="absolute rounded-full bg-forest-emerald shadow-lg shadow-forest-emerald/50"
+          style={{
+            left: `${node.x}%`,
+            top: `${node.y}%`,
+            width: 12,
+            height: 12,
+            marginLeft: -6,
+            marginTop: -6,
+          }}
+          initial={{ scale: 0, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          transition={{
+            duration: 0.45,
+            delay: node.delay,
+          }}
+        />
+      ))}
+    </div>
+  )
+}
+
+const Home = () => {
   return (
     <div className="min-h-screen relative overflow-hidden">
       <KnowledgeGraph opacity={0.35} />
@@ -85,33 +195,83 @@ const Home = () => {
             </div>
           </motion.div>
 
-          {/* Features Grid */}
-          <motion.div
+          {/* How Forest Works - Horizontal Flow */}
+          <motion.section
             initial={{ opacity: 0, y: 40 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.4, duration: 0.8 }}
-            className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 xl:gap-8 mt-24 w-full"
+            className="mt-24 w-full max-w-6xl"
           >
-            {features.map((feature, index) => (
+            <div className="flex flex-col lg:flex-row items-center justify-center gap-8 lg:gap-4">
+              {/* Cell 1: Question → Node */}
               <motion.div
-                key={feature.title}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.6 + index * 0.1 }}
-                className="bg-forest-card/50 backdrop-blur-sm border border-forest-border rounded-xl p-6 xl:p-8"
+                initial={{ opacity: 0, x: -20 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ delay: 0.6, duration: 0.5 }}
+                className="flex flex-col items-center text-center w-full lg:flex-1 max-w-sm"
               >
-                <div className="inline-flex p-3 xl:p-4 bg-forest-emerald/10 rounded-lg mb-4">
-                  <feature.icon className="text-forest-emerald xl:w-7 xl:h-7 2xl:w-8 2xl:h-8" size={24} />
+                <div className="relative w-32 h-32 flex items-center justify-center mb-4 rounded-xl bg-gray-700/80 p-4">
+                  <QuestionToNodeAnimation />
                 </div>
-                <h3 className="text-lg xl:text-xl 2xl:text-2xl font-semibold text-white mb-2">
-                  {feature.title}
-                </h3>
+                <h3 className="text-forest-emerald font-semibold text-lg xl:text-xl mb-2">1. Ask</h3>
                 <p className="text-forest-light-gray text-sm xl:text-base">
-                  {feature.description}
+                  Pose a question about anything you're learning.
                 </p>
               </motion.div>
-            ))}
-          </motion.div>
+
+              {/* Arrow */}
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.9 }}
+                className="hidden lg:block text-forest-emerald/50"
+              >
+                <ArrowRight size={32} className="rotate-0" />
+              </motion.div>
+
+              {/* Cell 2: Ask again - Bronze, Silver, Gold */}
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.7, duration: 0.5 }}
+                className="flex flex-col items-center text-center w-full lg:flex-1 max-w-sm"
+              >
+                <div className="w-32 h-32 flex items-center justify-center mb-4 rounded-xl bg-gray-700/80 p-4 overflow-hidden">
+                  <BronzeSilverGoldAnimation />
+                </div>
+                <h3 className="text-forest-emerald font-semibold text-lg xl:text-xl mb-2">2. Ask again</h3>
+                <p className="text-forest-light-gray text-sm xl:text-base">
+                  Keep asking — your node grows from bronze to silver to gold.
+                </p>
+              </motion.div>
+
+              {/* Arrow */}
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 1 }}
+                className="hidden lg:block text-forest-emerald/50"
+              >
+                <ArrowRight size={32} />
+              </motion.div>
+
+              {/* Cell 3: Forest growing */}
+              <motion.div
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ delay: 0.8, duration: 0.5 }}
+                className="flex flex-col items-center text-center w-full lg:flex-1 max-w-sm"
+              >
+                <div className="w-32 h-32 flex items-center justify-center mb-4 rounded-xl bg-gray-700/80 p-4">
+                  <ForestGrowingAnimation />
+                </div>
+                <h3 className="text-forest-emerald font-semibold text-lg xl:text-xl mb-2">3. Your Forest grows</h3>
+                <p className="text-forest-light-gray text-sm xl:text-base">
+                  Each concept becomes a node. The more you ask, the stronger it grows.
+                </p>
+              </motion.div>
+            </div>
+          </motion.section>
         </div>
       </main>
     </div>
