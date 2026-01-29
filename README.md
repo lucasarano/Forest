@@ -6,16 +6,19 @@ A dark, minimalistic React web app with an Obsidian-inspired design. Forest feat
 
 - 🌲 **Dark Minimalistic Design** - Obsidian-inspired dark theme with emerald and teal accents
 - 🧠 **Animated Knowledge Graph** - Dynamic canvas-based background with connected nodes
-- 🔐 **Authentication Pages** - Beautiful login and signup pages with form validation
+- 🔐 **Secure Authentication** - Supabase-powered login/signup with form validation
+- 🏠 **Beautiful Home Page** - Hero section with feature showcase
 - ⚡ **Fast & Responsive** - Built with Vite and React for optimal performance
 - 🎨 **Smooth Animations** - Powered by Framer Motion for delightful interactions
 - 📱 **Mobile Friendly** - Fully responsive design that works on all devices
 - ✨ **Modern UX** - Password strength indicator, form validation, and smooth transitions
+- 🔒 **Protected Routes** - Dashboard accessible only to authenticated users
 
 ## Tech Stack
 
 - **React 18** - UI library with hooks
 - **React Router** - Client-side routing
+- **Supabase** - Backend-as-a-Service for authentication and database
 - **Vite** - Lightning-fast build tool and dev server
 - **Tailwind CSS** - Utility-first CSS framework
 - **Framer Motion** - Animation library
@@ -36,12 +39,18 @@ A dark, minimalistic React web app with an Obsidian-inspired design. Forest feat
 npm install
 ```
 
-2. Start the development server:
+2. Set up Supabase:
+   - Create a Supabase project at [supabase.com](https://supabase.com)
+   - Copy `.env.example` to `.env`
+   - Add your Supabase credentials to `.env`
+   - See `SUPABASE_SETUP.md` for detailed instructions
+
+3. Start the development server:
 ```bash
 npm run dev
 ```
 
-3. Open your browser and navigate to `http://localhost:3000`
+4. Open your browser and navigate to `http://localhost:3000`
 
 ## Available Scripts
 
@@ -55,24 +64,32 @@ npm run dev
 Forest/
 ├── src/
 │   ├── components/
-│   │   ├── KnowledgeGraph.jsx # Animated graph background
-│   │   ├── Logo.jsx           # Forest logo component
-│   │   ├── Button.jsx         # Reusable button component
-│   │   └── Input.jsx          # Reusable input component
+│   │   ├── KnowledgeGraph.jsx  # Animated graph background
+│   │   ├── Logo.jsx            # Forest logo component
+│   │   ├── Button.jsx          # Reusable button component
+│   │   ├── Input.jsx           # Reusable input component
+│   │   └── ProtectedRoute.jsx  # Auth route wrapper
 │   ├── pages/
-│   │   ├── Login.jsx          # Login page
-│   │   ├── Signup.jsx         # Signup page with password strength
-│   │   └── Dashboard.jsx      # Main dashboard
-│   ├── App.jsx                # Root component with routing
-│   ├── main.jsx              # Entry point
-│   └── index.css             # Global styles
+│   │   ├── Home.jsx            # Landing page
+│   │   ├── Login.jsx           # Login page
+│   │   ├── Signup.jsx          # Signup page with password strength
+│   │   └── Dashboard.jsx       # Main dashboard
+│   ├── context/
+│   │   └── AuthContext.jsx     # Auth state management
+│   ├── lib/
+│   │   └── supabase.js         # Supabase client
+│   ├── App.jsx                 # Root component with routing
+│   ├── main.jsx               # Entry point
+│   └── index.css              # Global styles
 ├── public/
-│   └── forest-icon.svg       # App favicon
-├── index.html                # HTML template
-├── package.json              # Dependencies
-├── vite.config.js           # Vite configuration
-├── tailwind.config.js       # Tailwind configuration
-└── postcss.config.js        # PostCSS configuration
+│   └── forest-icon.svg        # App favicon
+├── .env.example               # Environment variables template
+├── SUPABASE_SETUP.md          # Supabase setup guide
+├── index.html                 # HTML template
+├── package.json               # Dependencies
+├── vite.config.js            # Vite configuration
+├── tailwind.config.js        # Tailwind configuration
+└── postcss.config.js         # PostCSS configuration
 ```
 
 ## Color Palette

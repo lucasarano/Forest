@@ -10,12 +10,12 @@ const Button = ({
   disabled = false,
   fullWidth = false
 }) => {
-  const baseStyles = 'px-6 py-3 rounded-lg font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed'
+  const baseStyles = 'px-6 xl:px-8 py-3 xl:py-4 text-base xl:text-lg rounded-lg font-medium transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed'
 
   const variants = {
-    primary: 'bg-gradient-to-r from-forest-emerald to-forest-teal text-forest-darker hover:shadow-lg hover:shadow-forest-emerald/20',
-    secondary: 'bg-forest-card border border-forest-border text-forest-light-gray hover:border-forest-emerald hover:text-forest-emerald',
-    ghost: 'text-forest-light-gray hover:text-forest-emerald hover:bg-forest-card'
+    primary: 'bg-gradient-to-r from-forest-emerald to-forest-teal text-forest-darker hover:shadow-xl hover:shadow-forest-emerald/30 hover:brightness-110',
+    secondary: 'bg-forest-card/70 backdrop-blur-sm border border-forest-border text-forest-light-gray hover:border-forest-emerald hover:text-forest-emerald hover:shadow-lg hover:shadow-forest-emerald/10',
+    ghost: 'text-forest-light-gray hover:text-forest-emerald hover:bg-forest-card/50'
   }
 
   const widthClass = fullWidth ? 'w-full' : ''

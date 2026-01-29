@@ -1,7 +1,8 @@
 import React from 'react'
+import { Link } from 'react-router-dom'
 import { Trees } from 'lucide-react'
 
-const Logo = ({ size = 'md' }) => {
+const Logo = ({ size = 'md', clickable = false }) => {
   const sizes = {
     sm: 'text-xl',
     md: 'text-2xl',
@@ -14,7 +15,7 @@ const Logo = ({ size = 'md' }) => {
     lg: 32
   }
 
-  return (
+  const content = (
     <div className="flex items-center gap-2">
       <Trees className="text-forest-emerald" size={iconSizes[size]} />
       <span className={`${sizes[size]} font-bold bg-gradient-to-r from-forest-emerald to-forest-teal bg-clip-text text-transparent`}>
@@ -22,6 +23,16 @@ const Logo = ({ size = 'md' }) => {
       </span>
     </div>
   )
+
+  if (clickable) {
+    return (
+      <Link to="/" className="hover:opacity-80 transition-opacity duration-75">
+        {content}
+      </Link>
+    )
+  }
+
+  return content
 }
 
 export default Logo

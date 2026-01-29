@@ -2,7 +2,6 @@ import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
-  Trees,
   LogOut,
   Brain,
   BookOpen,
@@ -12,13 +11,17 @@ import {
   Network
 } from 'lucide-react'
 import KnowledgeGraph from '../components/KnowledgeGraph'
+import Logo from '../components/Logo'
 import Button from '../components/Button'
+import { useAuth } from '../context/AuthContext'
 
 const Dashboard = () => {
   const navigate = useNavigate()
-  const [userName] = useState('John Doe')
+  const { user, signOut } = useAuth()
+  const userName = user?.user_metadata?.full_name || user?.email || 'User'
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await signOut()
     navigate('/login')
   }
 
@@ -51,19 +54,14 @@ const Dashboard = () => {
   ]
 
   return (
-    <div className="min-h-screen bg-forest-dark relative overflow-hidden">
-      <KnowledgeGraph opacity={0.15} />
+    <div className="min-h-screen relative overflow-hidden">
+      <KnowledgeGraph opacity={0.3} />
 
       {/* Header */}
-      <header className="relative z-10 border-b border-forest-border bg-forest-darker/50 backdrop-blur-xl">
-        <div className="max-w-7xl mx-auto px-6 py-4">
+      <header className="relative z-10 border-b border-forest-border/30 bg-forest-darker/20 backdrop-blur-md">
+        <div className="max-w-7xl 2xl:max-w-[1600px] mx-auto px-6 xl:px-8 2xl:px-12 py-4">
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Trees className="text-forest-emerald" size={28} />
-              <span className="text-2xl font-bold bg-gradient-to-r from-forest-emerald to-forest-teal bg-clip-text text-transparent">
-                Forest
-              </span>
-            </div>
+            <Logo size="md" clickable />
 
             <div className="flex items-center gap-4">
               <div className="text-right">
@@ -79,17 +77,17 @@ const Dashboard = () => {
       </header>
 
       {/* Main Content */}
-      <main className="relative z-10 max-w-7xl mx-auto px-6 py-8">
+      <main className="relative z-10 max-w-7xl 2xl:max-w-[1600px] mx-auto px-6 xl:px-8 2xl:px-12 py-8">
         {/* Welcome Section */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           className="mb-8"
         >
-          <h1 className="text-4xl font-bold text-white mb-2">
+          <h1 className="text-3xl xl:text-4xl 2xl:text-5xl font-bold text-white mb-2">
             Your Learning Dashboard
           </h1>
-          <p className="text-forest-light-gray">
+          <p className="text-base xl:text-lg 2xl:text-xl text-forest-light-gray">
             Continue your journey to mastery
           </p>
         </motion.div>
@@ -99,7 +97,7 @@ const Dashboard = () => {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1 }}
-          className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8"
+          className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 xl:gap-8 mb-8"
         >
           {stats.map((stat, index) => (
             <motion.div
@@ -107,13 +105,13 @@ const Dashboard = () => {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.1 + index * 0.05 }}
-              className="bg-forest-card border border-forest-border rounded-xl p-6 hover:border-forest-emerald transition-colors"
+              className="bg-forest-card/70 backdrop-blur-sm border border-forest-border rounded-xl p-6 xl:p-8"
             >
               <div className="flex items-center justify-between mb-4">
-                <stat.icon className={stat.color} size={24} />
-                <span className="text-2xl font-bold text-white">{stat.value}</span>
+                <stat.icon className={`${stat.color} xl:w-7 xl:h-7 2xl:w-8 2xl:h-8`} size={24} />
+                <span className="text-2xl xl:text-3xl 2xl:text-4xl font-bold text-white">{stat.value}</span>
               </div>
-              <p className="text-forest-light-gray text-sm">{stat.label}</p>
+              <p className="text-forest-light-gray text-sm xl:text-base">{stat.label}</p>
             </motion.div>
           ))}
         </motion.div>
@@ -126,27 +124,27 @@ const Dashboard = () => {
           className="mb-8"
         >
           <div className="flex items-center justify-between mb-6">
-            <h2 className="text-2xl font-bold text-white">Continue Learning</h2>
+            <h2 className="text-2xl xl:text-3xl 2xl:text-4xl font-bold text-white">Continue Learning</h2>
             <Button variant="ghost">View All</Button>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 2xl:grid-cols-4 gap-6 xl:gap-8">
             {recentCourses.map((course, index) => (
               <motion.div
                 key={course.title}
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.3 + index * 0.1 }}
-                className="bg-forest-card border border-forest-border rounded-xl p-6 hover:border-forest-emerald transition-all cursor-pointer group"
+                className="bg-forest-card/70 backdrop-blur-sm border border-forest-border rounded-xl p-6 xl:p-8"
               >
                 <div className="mb-4">
-                  <span className="text-xs text-forest-emerald font-medium">
+                  <span className="text-xs xl:text-sm text-forest-emerald font-medium">
                     {course.category}
                   </span>
-                  <h3 className="text-lg font-semibold text-white mt-2 group-hover:text-forest-emerald transition-colors">
+                  <h3 className="text-lg xl:text-xl 2xl:text-2xl font-semibold text-white mt-2">
                     {course.title}
                   </h3>
-                  <p className="text-sm text-forest-gray mt-1">
+                  <p className="text-sm xl:text-base text-forest-gray mt-1">
                     Last accessed: {course.lastAccessed}
                   </p>
                 </div>
@@ -175,41 +173,45 @@ const Dashboard = () => {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.5 }}
-          className="grid grid-cols-1 md:grid-cols-2 gap-6"
+          className="grid grid-cols-1 md:grid-cols-2 gap-6 xl:gap-8"
         >
-          <div className="bg-gradient-to-br from-forest-emerald/10 to-forest-teal/10 border border-forest-emerald/30 rounded-xl p-6">
-            <div className="flex items-start gap-4">
-              <div className="p-3 bg-forest-emerald/20 rounded-lg">
-                <Sparkles className="text-forest-emerald" size={24} />
+          <motion.div
+            className="bg-gradient-to-br from-forest-emerald/10 to-forest-teal/10 border border-forest-emerald/30 rounded-xl p-6 backdrop-blur-sm"
+          >
+            <div className="flex items-start gap-4 xl:gap-6">
+              <div className="p-3 xl:p-4 bg-forest-emerald/20 rounded-lg">
+                <Sparkles className="text-forest-emerald xl:w-7 xl:h-7 2xl:w-8 2xl:h-8" size={24} />
               </div>
               <div className="flex-1">
-                <h3 className="text-xl font-semibold text-white mb-2">
+                <h3 className="text-xl xl:text-2xl 2xl:text-3xl font-semibold text-white mb-2">
                   AI-Powered Recommendations
                 </h3>
-                <p className="text-forest-light-gray mb-4">
+                <p className="text-forest-light-gray xl:text-lg mb-4">
                   Get personalized course suggestions based on your learning patterns
                 </p>
                 <Button variant="secondary">Discover Courses</Button>
               </div>
             </div>
-          </div>
+          </motion.div>
 
-          <div className="bg-gradient-to-br from-forest-teal/10 to-forest-green/10 border border-forest-teal/30 rounded-xl p-6">
-            <div className="flex items-start gap-4">
-              <div className="p-3 bg-forest-teal/20 rounded-lg">
-                <Network className="text-forest-teal" size={24} />
+          <motion.div
+            className="bg-gradient-to-br from-forest-teal/10 to-forest-green/10 border border-forest-teal/30 rounded-xl p-6 backdrop-blur-sm"
+          >
+            <div className="flex items-start gap-4 xl:gap-6">
+              <div className="p-3 xl:p-4 bg-forest-teal/20 rounded-lg">
+                <Network className="text-forest-teal xl:w-7 xl:h-7 2xl:w-8 2xl:h-8" size={24} />
               </div>
               <div className="flex-1">
-                <h3 className="text-xl font-semibold text-white mb-2">
+                <h3 className="text-xl xl:text-2xl 2xl:text-3xl font-semibold text-white mb-2">
                   Knowledge Graph
                 </h3>
-                <p className="text-forest-light-gray mb-4">
+                <p className="text-forest-light-gray xl:text-lg mb-4">
                   Visualize connections between concepts you've learned
                 </p>
                 <Button variant="secondary">Explore Graph</Button>
               </div>
             </div>
-          </div>
+          </motion.div>
         </motion.div>
       </main>
     </div>

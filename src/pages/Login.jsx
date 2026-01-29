@@ -1,19 +1,30 @@
 import React, { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { Mail, Lock, ArrowRight } from 'lucide-react'
+import { Mail, Lock, ArrowRight, AlertCircle } from 'lucide-react'
 import KnowledgeGraph from '../components/KnowledgeGraph'
 import Logo from '../components/Logo'
 import Button from '../components/Button'
 import Input from '../components/Input'
+import { useAuth } from '../context/AuthContext'
 
 const Login = () => {
   const navigate = useNavigate()
+  const { signIn, user } = useAuth()
   const [formData, setFormData] = useState({
     email: '',
     password: ''
   })
   const [errors, setErrors] = useState({})
+  const [loading, setLoading] = useState(false)
+  const [serverError, setServerError] = useState('')
+
+  // Redirect if already logged in
+  React.useEffect(() => {
+    if (user) {
+      navigate('/dashboard')
+    }
+  }, [user, navigate])
 
   const handleChange = (e) => {
     const { name, value } = e.target
@@ -41,54 +52,80 @@ const Login = () => {
     return newErrors
   }
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault()
+    setServerError('')
     const newErrors = validateForm()
 
     if (Object.keys(newErrors).length === 0) {
-      // Here you would normally call your authentication API
-      console.log('Login attempt:', formData)
-      navigate('/dashboard')
+      setLoading(true)
+      const { data, error } = await signIn(formData.email, formData.password)
+
+      if (error) {
+        setServerError(error.message)
+        setLoading(false)
+      } else if (data.user) {
+        navigate('/dashboard')
+      }
     } else {
       setErrors(newErrors)
     }
   }
 
   return (
-    <div className="min-h-screen bg-forest-dark flex items-center justify-center relative overflow-hidden">
-      <KnowledgeGraph opacity={0.25} />
+    <div className="min-h-screen flex items-center justify-center relative overflow-hidden">
+      <KnowledgeGraph opacity={0.5} />
 
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5 }}
-        className="relative z-10 w-full max-w-md mx-4"
+        className="relative z-10 w-full max-w-md xl:max-w-lg 2xl:max-w-xl mx-4"
       >
-        <div className="bg-forest-darker/80 backdrop-blur-xl border border-forest-border rounded-2xl p-8 shadow-2xl">
+        <div className="bg-forest-darker/50 backdrop-blur-md border border-forest-border/50 rounded-2xl p-8 xl:p-10 2xl:p-12 shadow-2xl">
           {/* Logo */}
           <div className="flex justify-center mb-8">
-            <Logo size="lg" />
+            <Logo size="lg" clickable />
           </div>
 
           {/* Header */}
-          <div className="text-center mb-8">
+          <motion.div
+            className="text-center mb-8"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 0.2 }}
+          >
             <h1 className="text-3xl font-bold text-white mb-2">
               Welcome Back
             </h1>
             <p className="text-forest-light-gray">
               Sign in to continue your learning journey
             </p>
-          </div>
+          </motion.div>
+
+          {/* Server Error */}
+          {serverError && (
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="bg-red-500/10 border border-red-500/50 rounded-lg p-4 mb-6"
+            >
+              <div className="flex items-center gap-2 text-red-400">
+                <AlertCircle size={20} />
+                <p className="text-sm">{serverError}</p>
+              </div>
+            </motion.div>
+          )}
 
           {/* Form */}
-          <form onSubmit={handleSubmit} className="space-y-6">
+          <form onSubmit={handleSubmit} className="space-y-6" autoComplete="off">
             <Input
               label="Email"
               type="email"
               name="email"
               value={formData.email}
               onChange={handleChange}
-              placeholder="you@example.com"
+              placeholder=""
               icon={Mail}
               error={errors.email}
               required
@@ -100,7 +137,7 @@ const Login = () => {
               name="password"
               value={formData.password}
               onChange={handleChange}
-              placeholder="••••••••"
+              placeholder=""
               icon={Lock}
               error={errors.password}
               required
@@ -116,16 +153,16 @@ const Login = () => {
               </label>
               <Link
                 to="/forgot-password"
-                className="text-forest-emerald hover:text-forest-teal transition-colors"
+                className="text-forest-emerald hover:text-forest-teal transition-colors duration-100"
               >
                 Forgot password?
               </Link>
             </div>
 
-            <Button type="submit" variant="primary" fullWidth>
+            <Button type="submit" variant="primary" fullWidth disabled={loading}>
               <span className="flex items-center justify-center gap-2">
-                Sign In
-                <ArrowRight size={18} />
+                {loading ? 'Signing in...' : 'Sign In'}
+                {!loading && <ArrowRight size={18} />}
               </span>
             </Button>
           </form>
@@ -148,7 +185,7 @@ const Login = () => {
               Don't have an account?{' '}
               <Link
                 to="/signup"
-                className="text-forest-emerald hover:text-forest-teal font-medium transition-colors"
+                className="text-forest-emerald hover:text-forest-teal font-medium transition-colors duration-100"
               >
                 Sign up for free
               </Link>
