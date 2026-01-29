@@ -9,6 +9,7 @@ const TreeNode = ({
   isSelected,
   scale,
   onLabelChange,
+  onDoubleClickNode,
 }) => {
   const [isDragging, setIsDragging] = useState(false)
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
@@ -41,8 +42,12 @@ const TreeNode = ({
 
   const handleDoubleClick = (e) => {
     e.stopPropagation()
-    setIsEditing(true)
-    setEditValue(node.label)
+    if (onDoubleClickNode) {
+      onDoubleClickNode(node.id)
+    } else {
+      setIsEditing(true)
+      setEditValue(node.label)
+    }
   }
 
   const handleBlur = () => {
@@ -74,8 +79,8 @@ const TreeNode = ({
     }
   }, [isDragging, dragStart])
 
-  // Node has AI content
-  const hasContent = !!node.aiResponse
+  // Node has AI content (messages or legacy aiResponse)
+  const hasContent = (node.messages?.some(m => m.role === 'assistant')) || !!node.aiResponse
 
   return (
     <motion.div

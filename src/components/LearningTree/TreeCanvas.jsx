@@ -16,6 +16,7 @@ const TreeCanvas = forwardRef(({
   setActiveNodeId,
   activePath,
   setActivePath,
+  onDoubleClickNode,
 }, ref) => {
   const canvasRef = useRef(null)
   const [camera, setCamera] = useState({ x: 0, y: 0, scale: 1 })
@@ -85,6 +86,7 @@ const TreeCanvas = forwardRef(({
       aiResponse: '',
       contextAnchor: '',
       highlights: [],
+      messages: [],
     }
 
     setNodes([...nodes, newNode])
@@ -251,6 +253,7 @@ const TreeCanvas = forwardRef(({
             onLabelChange={handleLabelChange}
             isSelected={activeNodeId === node.id}
             scale={camera.scale}
+            onDoubleClickNode={onDoubleClickNode}
           />
         ))}
       </div>

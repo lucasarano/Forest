@@ -18,6 +18,7 @@ export const buildContextPath = (nodeId, nodesArray) => {
       question: currentNode.question,
       contextAnchor: currentNode.contextAnchor,
       aiResponse: currentNode.aiResponse,
+      messages: currentNode.messages,
     })
     currentNode = nodesArray.find(n => n.id === currentNode.parentId)
   }
@@ -26,37 +27,32 @@ export const buildContextPath = (nodeId, nodesArray) => {
 }
 
 /**
- * Format contextual heritage string for AI
+ * Get heritage string (path context) for AI - no current question
  */
-export const prepareAIPayload = (contextPath, newQuestion) => {
+export const getHeritageString = (contextPath) => {
   let heritage = "Contextual Heritage:\n"
-
   contextPath.forEach((node, i) => {
+    const firstQ = node.question || node.messages?.[0]?.content
     if (i === 0) {
       heritage += `Root Topic: "${node.label}"`
-      if (node.question) {
-        heritage += ` (Original question: "${node.question}")`
-      }
+      if (firstQ) heritage += ` (Original question: "${firstQ}")`
       heritage += '\n'
     } else {
       heritage += `  ↳ Level ${i}: "${node.label}"`
-      if (node.contextAnchor) {
-        heritage += ` (branched from: "${node.contextAnchor}")`
-      }
-      if (node.question) {
-        heritage += ` - Asked: "${node.question}"`
-      }
+      if (node.contextAnchor) heritage += ` (branched from: "${node.contextAnchor}")`
+      if (firstQ) heritage += ` - Asked: "${firstQ}"`
       heritage += '\n'
     }
   })
+  return heritage
+}
 
-  heritage += `\nCurrent Question: ${newQuestion}`
-
-  return {
-    heritage,
-    question: newQuestion,
-    fullPrompt: heritage,
-  }
+/**
+ * Format contextual heritage string for AI (legacy: includes current question in one string)
+ */
+export const prepareAIPayload = (contextPath, newQuestion) => {
+  const heritage = getHeritageString(contextPath) + (newQuestion ? `\nCurrent Question: ${newQuestion}` : '')
+  return { heritage, question: newQuestion, fullPrompt: heritage }
 }
 
 /**

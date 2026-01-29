@@ -1,16 +1,46 @@
-import React, { useState, useRef } from 'react'
+import React, { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Send, Loader, ChevronRight, X, TreePine } from 'lucide-react'
+import { Send, Loader, ChevronRight, X, TreePine, GitBranch } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useTextSelection } from '../../hooks/useTextSelection'
+
+// Derive messages for display (supports legacy question/aiResponse)
+const getDisplayMessages = (node) => {
+  if (!node) return []
+  if (node.messages?.length) return node.messages
+  if (node.question || node.aiResponse) {
+    return [
+      ...(node.question ? [{ role: 'user', content: node.question }] : []),
+      ...(node.aiResponse ? [{ role: 'assistant', content: node.aiResponse }] : []),
+    ]
+  }
+  return []
+}
+
+// Inject markdown links for highlight text so it stays highlighted and clickable
+const injectHighlightLinks = (content, highlights) => {
+  if (!content || !highlights?.length) return content
+  let out = content
+  for (const h of highlights) {
+    if (!h.text || !h.childId) continue
+    const linkText = h.text.replace(/\\/g, '\\\\').replace(/\]/g, '\\]')
+    const link = `[${linkText}](forest://node/${h.childId})`
+    out = out.replace(h.text, link)
+  }
+  return out
+}
 
 const StudyPanel = ({
   activeNode,
   nodes,
   onAskQuestion,
   onAskBranchFromSelection,
+  onNavigateToNode,
+  onAcceptNewNode,
+  onDismissNewNodeSuggestion,
   isAILoading,
+  loadingNodeId,
   onClose,
   activePath,
 }) => {
@@ -41,6 +71,12 @@ const StudyPanel = ({
   }
 
   const breadcrumbPath = getBreadcrumbPath()
+  const messages = getDisplayMessages(activeNode)
+  const chatScrollRef = useRef(null)
+
+  useEffect(() => {
+    chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: 'smooth' })
+  }, [messages.length, isAILoading])
 
   const handleSubmitQuestion = (e) => {
     e.preventDefault()
@@ -122,74 +158,163 @@ const StudyPanel = ({
 
   return (
     <div ref={panelRef} className="h-full flex flex-col bg-forest-darker relative">
-      {/* Header with Breadcrumb */}
+      {/* Header with Breadcrumb (node title is the last segment) */}
       <div className="flex-shrink-0 border-b border-forest-border bg-forest-card/50">
-        {/* Breadcrumb Path */}
-        <div className="px-4 py-2 flex items-center gap-1 overflow-x-auto text-sm border-b border-forest-border/50">
-          {breadcrumbPath.map((node, index) => (
-            <React.Fragment key={node.id}>
-              {index > 0 && <ChevronRight size={14} className="text-forest-gray flex-shrink-0" />}
-              <span
-                className={`truncate max-w-32 ${node.id === activeNode.id
-                  ? 'text-forest-emerald font-medium'
-                  : 'text-forest-light-gray'
-                  }`}
-              >
-                {node.label}
-              </span>
-            </React.Fragment>
-          ))}
-        </div>
-
-        {/* Node Title */}
-        <div className="px-4 py-3 flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-semibold text-white">{activeNode.label}</h2>
-            {activeNode.contextAnchor && (
-              <p className="text-xs text-forest-gray mt-1">
-                Branched from: "{activeNode.contextAnchor.substring(0, 50)}..."
-              </p>
-            )}
+        <div className="px-4 py-3 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1 overflow-x-auto text-sm min-w-0">
+            {breadcrumbPath.map((node, index) => (
+              <React.Fragment key={node.id}>
+                {index > 0 && <ChevronRight size={14} className="text-forest-gray flex-shrink-0" />}
+                <span
+                  className={`truncate max-w-32 ${node.id === activeNode.id
+                    ? 'text-forest-emerald font-semibold'
+                    : 'text-forest-light-gray'
+                    }`}
+                >
+                  {node.label}
+                </span>
+              </React.Fragment>
+            ))}
           </div>
           <button
             onClick={onClose}
-            className="p-2 hover:bg-forest-border rounded-lg transition-colors"
+            className="p-2 hover:bg-forest-border rounded-lg transition-colors flex-shrink-0"
           >
             <X size={18} className="text-forest-light-gray" />
           </button>
         </div>
+        {activeNode.contextAnchor && (
+          <p className="px-4 pb-2 text-xs text-forest-gray">
+            Branched from: &quot;{activeNode.contextAnchor.length > 50 ? activeNode.contextAnchor.substring(0, 50) + '…' : activeNode.contextAnchor}&quot;
+          </p>
+        )}
       </div>
 
-      {/* Scrollable Content Area */}
-      <div className="flex-1 overflow-hidden flex flex-col">
-        {activeNode.aiResponse ? (
+      {/* Content area: prose + faded user-question bubbles + thinking */}
+      <div className="flex-1 overflow-hidden flex flex-col relative">
+        <div
+          ref={chatScrollRef}
+          className="flex-1 overflow-y-auto overflow-x-hidden"
+        >
           <div
             ref={contentRef}
-            className="flex-1 overflow-y-auto p-6 select-text"
+            className="p-6 pb-2 min-h-full select-text"
             onMouseUp={(e) => e.stopPropagation()}
           >
-            <div className="prose prose-invert prose-sm max-w-none">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {activeNode.aiResponse}
-              </ReactMarkdown>
-            </div>
+            {messages.length === 0 && !isAILoading ? (
+              <div className="flex flex-col items-center justify-center py-12 text-center">
+                <div className="w-16 h-16 mb-4 rounded-full bg-forest-card border border-forest-border flex items-center justify-center">
+                  <Send size={24} className="text-forest-emerald/50" />
+                </div>
+                <p className="text-forest-light-gray mb-2">No content yet</p>
+                <p className="text-sm text-forest-gray">
+                  Ask a question below to start learning about this topic
+                </p>
+              </div>
+            ) : (
+              <>
+                {messages.map((msg, i) => (
+                  <motion.div
+                    key={i}
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className={msg.role === 'assistant' ? 'mb-6 pb-4 border-b border-forest-border/30' : 'mt-6'}
+                  >
+                    {msg.role === 'user' && (
+                      <div className="rounded-xl px-4 py-2.5 bg-forest-card/50 border border-forest-border/50 text-forest-light-gray/90 text-sm max-w-xl">
+                        {msg.content}
+                      </div>
+                    )}
+                    {msg.role === 'assistant' && (
+                      <div className="prose prose-invert prose-sm max-w-none text-white pt-1">
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                          components={{
+                            a: ({ href, children, ...props }) => {
+                              if (href?.startsWith('forest://node/')) {
+                                const nodeId = href.replace('forest://node/', '')
+                                return (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.preventDefault()
+                                      e.stopPropagation()
+                                      onNavigateToNode?.(nodeId)
+                                    }}
+                                    className="bg-forest-emerald/30 text-forest-emerald border-b border-forest-emerald/50 hover:bg-forest-emerald/40 px-0.5 rounded cursor-pointer font-medium"
+                                  >
+                                    {children}
+                                  </button>
+                                )
+                              }
+                              return <a href={href} {...props}>{children}</a>
+                            },
+                          }}
+                        >
+                          {injectHighlightLinks(msg.content, activeNode.highlights)}
+                        </ReactMarkdown>
+                      </div>
+                    )}
+                  </motion.div>
+                ))}
 
-            {/* Selection hint */}
-            <p className="text-xs text-forest-gray italic text-center mt-6 pt-4 border-t border-forest-border/30">
-              Select text above, then click Ask Forest to ask a follow-up question
-            </p>
+                {/* Thinking: only in the node that is loading, no outline */}
+                <AnimatePresence>
+                  {isAILoading && loadingNodeId === activeNode?.id && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 12 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, scale: 0.98 }}
+                      className="pt-2"
+                    >
+                      <div className="rounded-xl px-4 py-3 bg-forest-card/80 flex items-center gap-1.5 w-fit">
+                        <span className="flex gap-1">
+                          <span className="w-2 h-2 rounded-full bg-forest-emerald/80 animate-bounce" style={{ animationDelay: '0ms' }} />
+                          <span className="w-2 h-2 rounded-full bg-forest-emerald/80 animate-bounce" style={{ animationDelay: '150ms' }} />
+                          <span className="w-2 h-2 rounded-full bg-forest-emerald/80 animate-bounce" style={{ animationDelay: '300ms' }} />
+                        </span>
+                        <span className="text-xs text-forest-gray">Thinking...</span>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </>
+            )}
           </div>
-        ) : (
-          <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
-            <div className="w-16 h-16 mb-4 rounded-full bg-forest-card border border-forest-border flex items-center justify-center">
-              <Send size={24} className="text-forest-emerald/50" />
+
+          {/* Topic drift: offer to create new node for this concept */}
+          {activeNode?.suggestNewNode?.concept && messages.length > 0 && (
+            <div className="px-4 py-3 border-t border-forest-border/50 bg-forest-card/30 flex flex-col gap-2">
+              <p className="text-sm text-forest-light-gray">
+                This seems like a different topic. Create a new node for &quot;{activeNode.suggestNewNode.concept}&quot;?
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => onAcceptNewNode?.(activeNode.id)}
+                  className="flex-1 px-3 py-2 bg-forest-emerald/20 border border-forest-emerald/50 text-forest-emerald rounded-lg text-sm font-medium hover:bg-forest-emerald/30 transition-colors flex items-center justify-center gap-2"
+                >
+                  <GitBranch size={14} />
+                  Create new node
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onDismissNewNodeSuggestion?.(activeNode.id)}
+                  className="px-3 py-2 text-forest-gray hover:text-white text-sm"
+                >
+                  Dismiss
+                </button>
+              </div>
             </div>
-            <p className="text-forest-light-gray mb-2">No content yet</p>
-            <p className="text-sm text-forest-gray">
-              Ask a question below to start learning about this topic
+          )}
+
+          {messages.length > 0 && !activeNode?.suggestNewNode && (
+            <p className="text-xs text-forest-gray italic text-center px-4 py-2 border-t border-forest-border/30">
+              Select text, then Ask Forest to branch · Click highlighted text to jump to that branch
             </p>
-          </div>
-        )}
+          )}
+        </div>
 
         {/* Ask Forest popup - appears when text is selected; stays visible via snapshot when form is open */}
         <AnimatePresence>

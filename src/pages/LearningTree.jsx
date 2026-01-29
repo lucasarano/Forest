@@ -4,8 +4,9 @@ import { motion } from 'framer-motion'
 import { Home, PanelLeftClose, PanelLeft } from 'lucide-react'
 import TreeCanvas from '../components/LearningTree/TreeCanvas'
 import StudyPanel from '../components/LearningTree/StudyPanel'
-import { buildContextPath, prepareAIPayload, getActivePath } from '../lib/contextEngine'
+import { buildContextPath, getHeritageString, getActivePath } from '../lib/contextEngine'
 import { askAI } from '../lib/openaiService'
+import { parseModelResponse } from '../lib/responseParser'
 
 const STORAGE_KEY = 'forest-learning-tree'
 
@@ -16,15 +17,26 @@ const LearningTree = () => {
   const [activeNodeId, setActiveNodeId] = useState(null)
   const [activePath, setActivePath] = useState([])
   const [isAILoading, setIsAILoading] = useState(false)
+  const [loadingNodeId, setLoadingNodeId] = useState(null)
   const [isPanelOpen, setIsPanelOpen] = useState(true)
 
-  // Load data from localStorage on mount
+  // Load data from localStorage on mount; migrate legacy question/aiResponse to messages
   useEffect(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY)
       if (saved) {
         const data = JSON.parse(saved)
-        setNodes(data.nodes || [])
+        let loadedNodes = data.nodes || []
+        loadedNodes = loadedNodes.map((n) => {
+          if ((n.messages == null || n.messages.length === 0) && (n.question || n.aiResponse)) {
+            const messages = []
+            if (n.question) messages.push({ role: 'user', content: n.question })
+            if (n.aiResponse) messages.push({ role: 'assistant', content: n.aiResponse })
+            return { ...n, messages }
+          }
+          return { ...n, messages: n.messages || [] }
+        })
+        setNodes(loadedNodes)
         setEdges(data.edges || [])
       }
     } catch (error) {
@@ -95,30 +107,43 @@ const LearningTree = () => {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [activeNodeId, deleteNodeById])
 
-  // Ask AI a question for a specific node
+  // Ask AI a question for a specific node (chat: append user msg, then assistant)
   const handleAskQuestion = async (nodeId, question) => {
+    const node = nodes.find(n => n.id === nodeId)
+    if (!node) return
+
+    const userMsg = { role: 'user', content: question }
+    const newMessages = [...(node.messages || []), userMsg]
+
+    setNodes(prev => prev.map(n =>
+      n.id === nodeId ? { ...n, messages: newMessages } : n
+    ))
     setIsAILoading(true)
+    setLoadingNodeId(nodeId)
 
     try {
       const contextPath = buildContextPath(nodeId, nodes)
-      const payload = prepareAIPayload(contextPath, question)
+      const heritage = getHeritageString(contextPath)
+      const { response } = await askAI(heritage, newMessages)
+      const { content, concept, suggestNewNode } = parseModelResponse(response)
 
-      const { response } = await askAI(payload.fullPrompt, question)
-
-      // Update node with AI response
-      setNodes(prev => prev.map(n =>
-        n.id === nodeId
-          ? {
-            ...n,
-            question,
-            aiResponse: response,
-          }
-          : n
-      ))
+      setNodes(prev => prev.map(n => {
+        if (n.id !== nodeId) return n
+        const next = { ...n, messages: [...(n.messages || []), { role: 'assistant', content }] }
+        if (concept && newMessages.length === 1) next.label = concept
+        if (suggestNewNode) next.suggestNewNode = { concept: suggestNewNode }
+        return next
+      }))
     } catch (error) {
       console.error('AI request failed:', error)
+      setNodes(prev => prev.map(n =>
+        n.id === nodeId
+          ? { ...n, messages: [...(n.messages || []), { role: 'assistant', content: `Error: ${error.message}` }] }
+          : n
+      ))
     } finally {
       setIsAILoading(false)
+      setLoadingNodeId(null)
     }
   }
 
@@ -128,6 +153,8 @@ const LearningTree = () => {
     if (!parent) return
 
     setIsAILoading(true)
+    const childId = generateId()
+    setLoadingNodeId(childId)
 
     try {
       const updatedParent = {
@@ -140,7 +167,6 @@ const LearningTree = () => {
 
       const angle = Math.random() * Math.PI * 2
       const distance = 150
-      const childId = generateId()
 
       const newNode = {
         id: childId,
@@ -154,6 +180,7 @@ const LearningTree = () => {
         aiResponse: '',
         contextAnchor: selectedText,
         highlights: [],
+        messages: [],
       }
 
       const newEdge = {
@@ -174,16 +201,26 @@ const LearningTree = () => {
       const newPathEdges = getActivePath(childId, newNodes, newEdges)
       setActivePath(newPathEdges)
 
-      // AI prompt: include parent context + selected text + user's question
+      // AI: heritage from parent path; first message is the combined question
       const contextPath = buildContextPath(parentNodeId, nodes)
       const combinedQuestion = `The student selected this from the previous answer: "${selectedText}". Their follow-up question: ${userQuestion}`
-      const payload = prepareAIPayload(contextPath, combinedQuestion)
-
-      const { response } = await askAI(payload.fullPrompt, combinedQuestion)
+      const heritage = getHeritageString(contextPath)
+      const branchMessages = [{ role: 'user', content: combinedQuestion }]
+      const { response } = await askAI(heritage, branchMessages)
+      const { content, concept } = parseModelResponse(response)
+      const label = concept || selectedText.substring(0, 30) + (selectedText.length > 30 ? '...' : '')
 
       setNodes(prev => prev.map(n =>
         n.id === childId
-          ? { ...n, aiResponse: response }
+          ? {
+            ...n,
+            label,
+            aiResponse: content,
+            messages: [
+              { role: 'user', content: combinedQuestion },
+              { role: 'assistant', content },
+            ],
+          }
           : n
       ))
 
@@ -194,6 +231,7 @@ const LearningTree = () => {
       console.error('Branch creation failed:', error)
     } finally {
       setIsAILoading(false)
+      setLoadingNodeId(null)
     }
   }
 
@@ -201,6 +239,116 @@ const LearningTree = () => {
   const handleClosePanel = () => {
     setActiveNodeId(null)
     setActivePath([])
+  }
+
+  // Double-click node: open side panel and select that node
+  const handleDoubleClickNode = (nodeId) => {
+    setActiveNodeId(nodeId)
+    const pathEdgeIds = getActivePath(nodeId, nodes, edges)
+    setActivePath(pathEdgeIds)
+    setIsPanelOpen(true)
+  }
+
+  // Navigate to a branch node (e.g. from clicking highlighted text in parent)
+  const handleNavigateToNode = (nodeId) => {
+    setActiveNodeId(nodeId)
+    const pathEdgeIds = getActivePath(nodeId, nodes, edges)
+    setActivePath(pathEdgeIds)
+    setIsPanelOpen(true)
+    canvasRef.current?.centerOnNode(nodeId)
+  }
+
+  // User accepted "create new node" for topic drift: create separate node with question only, then send question and receive response on the new node
+  const handleAcceptNewNode = async (currentNodeId) => {
+    const node = nodes.find(n => n.id === currentNodeId)
+    if (!node?.suggestNewNode?.concept || !node.messages?.length) return
+
+    const msgs = [...node.messages]
+    const lastUser = msgs[msgs.length - 2]
+    const lastAssistant = msgs[msgs.length - 1]
+    if (msgs.length < 2 || lastUser?.role !== 'user' || lastAssistant?.role !== 'assistant') return
+
+    const newNodeId = generateId()
+    const angle = Math.random() * Math.PI * 2
+    const distance = 280
+    const questionContent = lastUser.content
+
+    const newNode = {
+      id: newNodeId,
+      label: node.suggestNewNode.concept,
+      position: {
+        x: node.position.x + Math.cos(angle) * distance,
+        y: node.position.y + Math.sin(angle) * distance,
+      },
+      parentId: null,
+      question: questionContent,
+      aiResponse: '',
+      contextAnchor: '',
+      highlights: [],
+      messages: [lastUser],
+    }
+
+    const messagesWithoutLast = msgs.slice(0, -2)
+    setNodes(prev => {
+      const updated = prev.map(n => {
+        if (n.id !== currentNodeId) return n
+        const { suggestNewNode: _, ...rest } = n
+        return { ...rest, messages: messagesWithoutLast }
+      })
+      return [...updated, newNode]
+    })
+    setActiveNodeId(newNodeId)
+    setActivePath([])
+    setIsPanelOpen(true)
+    setIsAILoading(true)
+    setLoadingNodeId(newNodeId)
+    setTimeout(() => canvasRef.current?.centerOnNode(newNodeId), 0)
+
+    try {
+      const heritage = getHeritageString([{
+        id: newNodeId,
+        label: node.suggestNewNode.concept,
+        question: questionContent,
+        messages: [lastUser],
+      }])
+      const { response } = await askAI(heritage, [lastUser])
+      const { content, concept } = parseModelResponse(response)
+      const label = concept || node.suggestNewNode.concept
+
+      setNodes(prev => prev.map(n =>
+        n.id === newNodeId
+          ? {
+            ...n,
+            label,
+            question: questionContent,
+            aiResponse: content,
+            messages: [lastUser, { role: 'assistant', content }],
+          }
+          : n
+      ))
+    } catch (error) {
+      console.error('New node AI request failed:', error)
+      setNodes(prev => prev.map(n =>
+        n.id === newNodeId
+          ? {
+            ...n,
+            messages: [lastUser, { role: 'assistant', content: `Error: ${error.message}` }],
+          }
+          : n
+      ))
+    } finally {
+      setIsAILoading(false)
+      setLoadingNodeId(null)
+    }
+  }
+
+  // Dismiss "create new node" suggestion
+  const handleDismissNewNodeSuggestion = (nodeId) => {
+    setNodes(prev => prev.map(n => {
+      if (n.id !== nodeId) return n
+      const { suggestNewNode, ...rest } = n
+      return rest
+    }))
   }
 
   return (
@@ -219,7 +367,7 @@ const LearningTree = () => {
         </Link>
 
         <div className="text-center">
-          <h1 className="text-lg font-semibold text-white">Learning Tree</h1>
+          <h1 className="text-lg font-semibold text-white">Forest</h1>
         </div>
 
         <div className="flex items-center gap-2">
@@ -248,6 +396,7 @@ const LearningTree = () => {
             setActiveNodeId={setActiveNodeId}
             activePath={activePath}
             setActivePath={setActivePath}
+            onDoubleClickNode={handleDoubleClickNode}
           />
         </div>
 
@@ -265,7 +414,11 @@ const LearningTree = () => {
               nodes={nodes}
               onAskQuestion={handleAskQuestion}
               onAskBranchFromSelection={handleAskBranchFromSelection}
+              onNavigateToNode={handleNavigateToNode}
+              onAcceptNewNode={handleAcceptNewNode}
+              onDismissNewNodeSuggestion={handleDismissNewNodeSuggestion}
               isAILoading={isAILoading}
+              loadingNodeId={loadingNodeId}
               onClose={handleClosePanel}
               activePath={activePath}
             />
