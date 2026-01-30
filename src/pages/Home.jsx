@@ -189,9 +189,6 @@ const Home = () => {
                   </span>
                 </Button>
               </Link>
-              <Button variant="secondary" className="text-lg px-8 py-4">
-                Watch Demo
-              </Button>
             </div>
           </motion.div>
 
