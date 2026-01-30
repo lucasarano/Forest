@@ -148,29 +148,38 @@ const LearningTree = () => {
   }
 
   // Ask Forest: branch from selected text + user's follow-up question
-  const handleAskBranchFromSelection = async (parentNodeId, selectedText, userQuestion) => {
+  const handleAskBranchFromSelection = async (parentNodeId, selectedTextRaw, userQuestionRaw) => {
+    const selectedText = (selectedTextRaw || '').trim().replace(/\s+/g, ' ')
+    const userQuestion = (userQuestionRaw || '').trim()
+    if (!selectedText || !userQuestion) return
+
     const parent = nodes.find(n => n.id === parentNodeId)
-    if (!parent) return
+    if (!parent?.position) return
+
+    const hasContent = (parent.messages?.some(m => m.role === 'assistant')) || !!parent.aiResponse
+    if (!hasContent) return
 
     setIsAILoading(true)
     const childId = generateId()
     setLoadingNodeId(childId)
+    const combinedQuestion = `The student selected this from the previous answer: "${selectedText}". Their follow-up question: ${userQuestion}`
 
     try {
       const updatedParent = {
         ...parent,
         highlights: [
           ...(parent.highlights || []),
-          { text: selectedText, childId: 'pending' }
-        ]
+          { text: selectedText, childId: 'pending' },
+        ],
       }
 
       const angle = Math.random() * Math.PI * 2
       const distance = 150
+      const initialLabel = selectedText.length > 30 ? selectedText.slice(0, 30) + '…' : selectedText
 
       const newNode = {
         id: childId,
-        label: selectedText.substring(0, 30) + (selectedText.length > 30 ? '...' : ''),
+        label: initialLabel,
         position: {
           x: parent.position.x + Math.cos(angle) * distance,
           y: parent.position.y + Math.sin(angle) * distance,
@@ -196,39 +205,63 @@ const LearningTree = () => {
 
       setNodes(newNodes)
       setEdges(newEdges)
-
       setActiveNodeId(childId)
-      const newPathEdges = getActivePath(childId, newNodes, newEdges)
-      setActivePath(newPathEdges)
+      setActivePath(getActivePath(childId, newNodes, newEdges))
 
-      // AI: heritage from parent path; first message is the combined question
       const contextPath = buildContextPath(parentNodeId, nodes)
-      const combinedQuestion = `The student selected this from the previous answer: "${selectedText}". Their follow-up question: ${userQuestion}`
       const heritage = getHeritageString(contextPath)
       const branchMessages = [{ role: 'user', content: combinedQuestion }]
-      const { response } = await askAI(heritage, branchMessages)
-      const { content, concept } = parseModelResponse(response)
-      const label = concept || selectedText.substring(0, 30) + (selectedText.length > 30 ? '...' : '')
+      const { response, error } = await askAI(heritage, branchMessages)
 
-      setNodes(prev => prev.map(n =>
-        n.id === childId
-          ? {
-            ...n,
-            label,
-            aiResponse: content,
-            messages: [
-              { role: 'user', content: combinedQuestion },
-              { role: 'assistant', content },
-            ],
-          }
-          : n
-      ))
+      if (error) {
+        setNodes(prev => prev.map(n =>
+          n.id === childId
+            ? {
+              ...n,
+              aiResponse: `Error: ${error}. Please try again.`,
+              messages: [
+                { role: 'user', content: combinedQuestion },
+                { role: 'assistant', content: `Error: ${error}. Please try again.` },
+              ],
+            }
+            : n
+        ))
+      } else {
+        const { content, concept } = parseModelResponse(response)
+        const label = (concept && concept.trim()) || initialLabel
+        setNodes(prev => prev.map(n =>
+          n.id === childId
+            ? {
+              ...n,
+              label,
+              aiResponse: content,
+              messages: [
+                { role: 'user', content: combinedQuestion },
+                { role: 'assistant', content },
+              ],
+            }
+            : n
+        ))
+      }
 
       if (canvasRef.current) {
         canvasRef.current.centerOnNode(childId)
       }
     } catch (error) {
       console.error('Branch creation failed:', error)
+      const errMsg = `Error: ${error.message}. Please try again.`
+      setNodes(prev => prev.map(n =>
+        n.id === childId
+          ? {
+            ...n,
+            aiResponse: errMsg,
+            messages: [
+              { role: 'user', content: combinedQuestion },
+              { role: 'assistant', content: errMsg },
+            ],
+          }
+          : n
+      ))
     } finally {
       setIsAILoading(false)
       setLoadingNodeId(null)

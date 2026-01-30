@@ -2,7 +2,6 @@ import React, { useState, useRef, useEffect, forwardRef, useImperativeHandle } f
 import { motion } from 'framer-motion'
 import TreeNode from './TreeNode'
 import TreeEdge from './TreeEdge'
-import ParallaxBackground from './ParallaxBackground'
 import { getActivePath } from '../../lib/contextEngine'
 
 const STORAGE_KEY = 'forest-learning-tree'
@@ -207,9 +206,6 @@ const TreeCanvas = forwardRef(({
           backgroundPosition: `${camera.x}px ${camera.y}px`,
         }}
       />
-
-      {/* Parallax Background */}
-      <ParallaxBackground camera={camera} />
 
       {/* Canvas Transform Container */}
       <div

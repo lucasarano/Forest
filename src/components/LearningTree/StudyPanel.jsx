@@ -18,15 +18,19 @@ const getDisplayMessages = (node) => {
   return []
 }
 
-// Inject markdown links for highlight text so it stays highlighted and clickable
+// Inject markdown links for highlight text (literal first-occurrence replace for robustness)
 const injectHighlightLinks = (content, highlights) => {
   if (!content || !highlights?.length) return content
   let out = content
   for (const h of highlights) {
-    if (!h.text || !h.childId) continue
-    const linkText = h.text.replace(/\\/g, '\\\\').replace(/\]/g, '\\]')
-    const link = `[${linkText}](forest://node/${h.childId})`
-    out = out.replace(h.text, link)
+    const text = (h.text || '').trim()
+    const childId = h.childId?.trim()
+    if (!text || !childId) continue
+    const idx = out.indexOf(text)
+    if (idx === -1) continue
+    const linkText = text.replace(/\\/g, '\\\\').replace(/\]/g, '\\]')
+    const link = `[${linkText}](forest://node/${childId})`
+    out = out.slice(0, idx) + link + out.slice(idx + text.length)
   }
   return out
 }
@@ -73,6 +77,10 @@ const StudyPanel = ({
   const breadcrumbPath = getBreadcrumbPath()
   const messages = getDisplayMessages(activeNode)
   const chatScrollRef = useRef(null)
+
+  const hasAssistantContent = messages.some((m) => m.role === 'assistant')
+  const isDefaultNodeLabel = /^Node\s*\d+$/.test((activeNode?.label || '').trim())
+  const canBranch = activeNode && hasAssistantContent && !isDefaultNodeLabel
 
   useEffect(() => {
     chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: 'smooth' })
@@ -309,16 +317,16 @@ const StudyPanel = ({
             </div>
           )}
 
-          {messages.length > 0 && !activeNode?.suggestNewNode && (
+          {messages.length > 0 && !activeNode?.suggestNewNode && canBranch && (
             <p className="text-xs text-forest-gray italic text-center px-4 py-2 border-t border-forest-border/30">
               Select text, then Ask Forest to branch · Click highlighted text to jump to that branch
             </p>
           )}
         </div>
 
-        {/* Ask Forest popup - appears when text is selected; stays visible via snapshot when form is open */}
+        {/* Ask Forest popup - only when branching is allowed (not first node / default "Node 1" title) */}
         <AnimatePresence>
-          {effectiveSelection && (
+          {effectiveSelection && canBranch && (
             <motion.div
               initial={{ opacity: 0, scale: 0.95, y: 8 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
