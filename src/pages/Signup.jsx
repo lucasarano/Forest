@@ -228,6 +228,7 @@ const Signup = () => {
               required
             />
 
+            {/* TO-DO: populate terms and conditions pages
             <div className="flex items-start gap-2 text-sm">
               <input
                 type="checkbox"
@@ -244,7 +245,7 @@ const Signup = () => {
                   Privacy Policy
                 </Link>
               </label>
-            </div>
+            </div> */}
 
             <Button type="submit" variant="primary" fullWidth disabled={loading}>
               <span className="flex items-center justify-center gap-2">
