@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Send, Loader, ChevronRight, X, TreePine, GitBranch } from 'lucide-react'
+import { Send, Loader, ChevronRight, X, TreePine, GitBranch, Pencil } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useTextSelection } from '../../hooks/useTextSelection'
@@ -16,6 +16,14 @@ const getDisplayMessages = (node) => {
     ]
   }
   return []
+}
+
+// Parse branch user message: "The student selected... \"...\". Their follow-up question: ..."
+const parseBranchUserMessage = (content) => {
+  if (!content || typeof content !== 'string') return null
+  const match = content.match(/The student selected this from the previous answer:\s*"([^"]+)"\.\s*Their follow-up question:\s*(.+)/s)
+  if (!match) return null
+  return { selectedText: match[1].trim(), followUpQuestion: match[2].trim() }
 }
 
 // Inject markdown links for highlight text (literal first-occurrence replace for robustness)
@@ -41,6 +49,7 @@ const StudyPanel = ({
   onAskQuestion,
   onAskBranchFromSelection,
   onNavigateToNode,
+  onRenameNode,
   onAcceptNewNode,
   onDismissNewNodeSuggestion,
   isAILoading,
@@ -52,6 +61,9 @@ const StudyPanel = ({
   const [branchQuestion, setBranchQuestion] = useState('')
   const [showBranchInput, setShowBranchInput] = useState(false)
   const [branchSelectionSnapshot, setBranchSelectionSnapshot] = useState(null)
+  const [isEditingLabel, setIsEditingLabel] = useState(false)
+  const [editLabelValue, setEditLabelValue] = useState('')
+  const editLabelInputRef = useRef(null)
   const panelRef = useRef(null)
   const contentRef = useRef(null)
   const { selection, clearSelection } = useTextSelection(contentRef)
@@ -119,6 +131,32 @@ const StudyPanel = ({
     setBranchQuestion('')
   }
 
+  const startEditingLabel = () => {
+    setEditLabelValue(activeNode?.label ?? '')
+    setIsEditingLabel(true)
+    setTimeout(() => editLabelInputRef.current?.focus(), 0)
+  }
+
+  const saveLabel = () => {
+    const trimmed = editLabelValue?.trim()
+    if (trimmed && activeNode && onRenameNode) {
+      onRenameNode(activeNode.id, trimmed)
+    }
+    setIsEditingLabel(false)
+  }
+
+  const cancelEditingLabel = () => {
+    setIsEditingLabel(false)
+    setEditLabelValue('')
+  }
+
+  useEffect(() => {
+    if (activeNode?.id) {
+      if (isEditingLabel) setIsEditingLabel(false)
+      setEditLabelValue(activeNode.label ?? '')
+    }
+  }, [activeNode?.id])
+
   // Empty state when no node is selected
   if (!activeNode) {
     return (
@@ -166,30 +204,92 @@ const StudyPanel = ({
 
   return (
     <div ref={panelRef} className="h-full flex flex-col bg-forest-darker relative">
-      {/* Header with Breadcrumb (node title is the last segment) */}
+      {/* Header with Breadcrumb (node title is the last segment) + Jump options to the right */}
       <div className="flex-shrink-0 border-b border-forest-border bg-forest-card/50">
-        <div className="px-4 py-3 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1 overflow-x-auto text-sm min-w-0">
-            {breadcrumbPath.map((node, index) => (
-              <React.Fragment key={node.id}>
-                {index > 0 && <ChevronRight size={14} className="text-forest-gray flex-shrink-0" />}
-                <span
-                  className={`truncate max-w-32 ${node.id === activeNode.id
-                    ? 'text-forest-emerald font-semibold'
-                    : 'text-forest-light-gray'
-                    }`}
-                >
-                  {node.label}
-                </span>
-              </React.Fragment>
-            ))}
+        <div className="px-4 py-3 flex items-center gap-3">
+          {/* Hierarchy (breadcrumb): scrolls when long */}
+          <div className="flex-1 min-w-0 overflow-x-auto">
+            <div className="flex items-center gap-1 ml-0.5 text-sm min-w-max">
+              {breadcrumbPath.map((node, index) => (
+                <React.Fragment key={node.id}>
+                  {index > 0 && <ChevronRight size={14} className="text-forest-gray flex-shrink-0" />}
+                  {node.id === activeNode.id ? (
+                    isEditingLabel ? (
+                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                        <input
+                          ref={editLabelInputRef}
+                          type="text"
+                          value={editLabelValue}
+                          onChange={(e) => setEditLabelValue(e.target.value)}
+                          onBlur={saveLabel}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault()
+                              saveLabel()
+                            }
+                            if (e.key === 'Escape') cancelEditingLabel()
+                          }}
+                          className="px-2 py-1 text-sm font-semibold text-forest-emerald bg-forest-darker border border-forest-emerald/50 rounded-md min-w-[120px] focus:outline-none focus:ring-1 focus:ring-forest-emerald"
+                        />
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5 flex-shrink-0 group">
+                        <span className="text-forest-emerald font-semibold whitespace-nowrap">
+                          {node.label}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={startEditingLabel}
+                          className="p-1 rounded text-forest-gray hover:text-forest-emerald hover:bg-forest-border/50 opacity-70 group-hover:opacity-100 transition-opacity"
+                          title="Rename node"
+                        >
+                          <Pencil size={12} />
+                        </button>
+                      </div>
+                    )
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => onNavigateToNode?.(node.id)}
+                      className="text-forest-light-gray rounded-md px-2 py-1 mx-0.5 text-left cursor-pointer bg-forest-card/40 border border-yellow-400/70 whitespace-nowrap hover:border-yellow-400"
+                    >
+                      {node.label}
+                    </button>
+                  )}
+                </React.Fragment>
+              ))}
+            </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-2 hover:bg-forest-border rounded-lg transition-colors flex-shrink-0"
-          >
-            <X size={18} className="text-forest-light-gray" />
-          </button>
+          {/* Right side: yellow next-node paths + close, always visible */}
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {activeNode.highlights?.length > 0 && (
+              <div className="flex items-center gap-2 flex-wrap justify-end">
+                {activeNode.highlights
+                  .filter((h) => h.childId && h.childId !== 'pending')
+                  .map((h) => {
+                    const child = nodes.find((n) => n.id === h.childId)
+                    const label = child?.label || h.text || 'Branch'
+                    return (
+                      <button
+                        key={h.childId}
+                        type="button"
+                        onClick={() => onNavigateToNode?.(h.childId)}
+                        className="px-3.5 py-2 rounded-lg text-sm font-medium bg-yellow-400 text-yellow-950 border border-yellow-300 hover:bg-yellow-300 hover:border-yellow-200 transition-colors shadow-sm whitespace-nowrap min-w-0"
+                        title={`Jump to: ${label}`}
+                      >
+                        {label}
+                      </button>
+                    )
+                  })}
+              </div>
+            )}
+            <button
+              onClick={onClose}
+              className="p-2 hover:bg-forest-border rounded-lg transition-colors flex-shrink-0"
+            >
+              <X size={18} className="text-forest-light-gray" />
+            </button>
+          </div>
         </div>
         {activeNode.contextAnchor && (
           <p className="px-4 pb-2 text-xs text-forest-gray">
@@ -227,13 +327,23 @@ const StudyPanel = ({
                     initial={{ opacity: 0, y: 8 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ duration: 0.2 }}
-                    className={msg.role === 'assistant' ? 'mb-6 pb-4 border-b border-forest-border/30' : 'mt-6'}
+                    className={`${msg.role === 'user' ? 'mt-6 flex justify-end' : 'mb-6 pb-4 border-b border-forest-border/30'}`}
                   >
-                    {msg.role === 'user' && (
-                      <div className="rounded-xl px-4 py-2.5 bg-forest-card/50 border border-forest-border/50 text-forest-light-gray/90 text-sm max-w-xl">
-                        {msg.content}
-                      </div>
-                    )}
+                    {msg.role === 'user' && (() => {
+                      const branch = parseBranchUserMessage(msg.content)
+                      return (
+                        <div className="rounded-xl px-4 py-2.5 bg-forest-card/50 border border-forest-border/50 text-forest-light-gray/90 text-sm max-w-xl">
+                          {branch ? (
+                            <>
+                              <p className="italic">&quot;{branch.selectedText}&quot;</p>
+                              <p className="mt-2">{branch.followUpQuestion}</p>
+                            </>
+                          ) : (
+                            msg.content
+                          )}
+                        </div>
+                      )
+                    })()}
                     {msg.role === 'assistant' && (
                       <div className="prose prose-invert prose-sm max-w-none text-white pt-1">
                         <ReactMarkdown
@@ -250,7 +360,8 @@ const StudyPanel = ({
                                       e.stopPropagation()
                                       onNavigateToNode?.(nodeId)
                                     }}
-                                    className="bg-forest-emerald/30 text-forest-emerald border-b border-forest-emerald/50 hover:bg-forest-emerald/40 px-0.5 rounded cursor-pointer font-medium"
+                                    className="highlight-link-box"
+                                    title="Click to jump to this branch"
                                   >
                                     {children}
                                   </button>

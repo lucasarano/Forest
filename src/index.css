@@ -135,3 +135,72 @@ body {
   color: #9ca3af;
   font-style: italic;
 }
+
+/* Branch highlight: yellow box with visible sparkles */
+@keyframes highlight-sparks {
+
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 2px rgba(250, 204, 21, 0.9),
+      0 0 12px 3px rgba(250, 204, 21, 0.5),
+      -5px -5px 0 1px rgba(253, 224, 71, 0.9),
+      5px -5px 0 1px rgba(253, 224, 71, 0.9),
+      -5px 5px 0 1px rgba(253, 224, 71, 0.9),
+      5px 5px 0 1px rgba(253, 224, 71, 0.9);
+  }
+
+  25% {
+    box-shadow:
+      0 0 0 2px rgba(250, 204, 21, 0.95),
+      0 0 18px 6px rgba(250, 204, 21, 0.6),
+      -6px -6px 0 2px rgba(254, 240, 138, 1),
+      6px -6px 0 2px rgba(254, 240, 138, 0.7),
+      -6px 6px 0 2px rgba(254, 240, 138, 0.7),
+      6px 6px 0 2px rgba(254, 240, 138, 1);
+  }
+
+  50% {
+    box-shadow:
+      0 0 0 2px rgba(250, 204, 21, 0.9),
+      0 0 14px 4px rgba(250, 204, 21, 0.55),
+      -5px -5px 0 1px rgba(253, 224, 71, 0.8),
+      5px -5px 0 1px rgba(253, 224, 71, 0.8),
+      -5px 5px 0 1px rgba(253, 224, 71, 0.8),
+      5px 5px 0 1px rgba(253, 224, 71, 0.8);
+  }
+
+  75% {
+    box-shadow:
+      0 0 0 2px rgba(250, 204, 21, 0.95),
+      0 0 20px 8px rgba(250, 204, 21, 0.65),
+      -6px -6px 0 2px rgba(254, 240, 138, 0.8),
+      6px -6px 0 2px rgba(254, 240, 138, 1),
+      -6px 6px 0 2px rgba(254, 240, 138, 1),
+      6px 6px 0 2px rgba(254, 240, 138, 0.8);
+  }
+}
+
+/* Clickable branch text inside the AI answer (yellow surrounding box + sparkles) */
+.highlight-link-box,
+.prose .highlight-link-box {
+  display: inline !important;
+  padding: 3px 6px !important;
+  margin: 0 2px !important;
+  background: rgba(250, 204, 21, 0.35) !important;
+  color: rgb(253, 224, 71) !important;
+  border: 2px solid rgb(234, 179, 8) !important;
+  border-radius: 4px !important;
+  cursor: pointer !important;
+  font-weight: 500 !important;
+  text-decoration: none !important;
+  animation: highlight-sparks 2s ease-in-out infinite !important;
+}
+
+.highlight-link-box:hover,
+.prose .highlight-link-box:hover {
+  background: rgba(250, 204, 21, 0.5) !important;
+  border-color: rgb(250, 204, 21) !important;
+  color: rgb(254, 240, 138) !important;
+  box-shadow: 0 0 12px 4px rgba(250, 204, 21, 0.45) !important;
+}

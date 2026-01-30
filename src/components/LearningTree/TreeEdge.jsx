@@ -106,23 +106,25 @@ const TreeEdge = ({ source, target, isHovered, isInActivePath }) => {
         }}
       />
 
-      {/* Animated particle when hovered or in active path */}
+      {/* Pulse along the edge when hovered or in active path */}
       {(isHovered || isInActivePath) && (
-        <motion.circle
-          cx={source.x}
-          cy={source.y}
-          r="5"
-          fill={particleColor}
-          animate={{
-            cx: [source.x, target.x],
-            cy: [source.y, target.y],
-            r: [5, 1.5],
-          }}
+        <motion.line
+          x1={source.x}
+          y1={source.y}
+          x2={target.x}
+          y2={target.y}
+          stroke={particleColor}
+          strokeWidth={2.5}
+          strokeLinecap="round"
+          strokeDasharray="8 16"
+          initial={false}
+          animate={{ strokeDashoffset: [0, 24] }}
           transition={{
-            duration: 1.5,
+            duration: 0.8,
             repeat: Infinity,
-            ease: [0.4, 0, 1, 1], // Exponential easing
+            ease: 'linear',
           }}
+          style={{ opacity: 0.9 }}
         />
       )}
     </g>

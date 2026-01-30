@@ -19,6 +19,27 @@ const LearningTree = () => {
   const [isAILoading, setIsAILoading] = useState(false)
   const [loadingNodeId, setLoadingNodeId] = useState(null)
   const [isPanelOpen, setIsPanelOpen] = useState(true)
+  const [panelWidth, setPanelWidth] = useState(420)
+  const isResizingRef = useRef(false)
+
+  const MIN_PANEL_WIDTH = 320
+  const MAX_PANEL_WIDTH = () => Math.max(MIN_PANEL_WIDTH, window.innerWidth * 0.75)
+
+  const handleResizeStart = useCallback((e) => {
+    e.preventDefault()
+    const onMove = (ev) => {
+      const w = window.innerWidth - ev.clientX
+      setPanelWidth(Math.min(MAX_PANEL_WIDTH(), Math.max(MIN_PANEL_WIDTH, w)))
+    }
+    const onUp = () => {
+      isResizingRef.current = false
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    isResizingRef.current = true
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [])
 
   // Load data from localStorage on mount; migrate legacy question/aiResponse to messages
   useEffect(() => {
@@ -384,6 +405,13 @@ const LearningTree = () => {
     }))
   }
 
+  // Rename current node
+  const handleRenameNode = (nodeId, newLabel) => {
+    const trimmed = (newLabel || '').trim()
+    if (!trimmed) return
+    setNodes(prev => prev.map(n => (n.id === nodeId ? { ...n, label: trimmed } : n)))
+  }
+
   return (
     <div className="relative w-full h-screen overflow-hidden bg-forest-darker">
       {/* Top Navigation Bar */}
@@ -418,7 +446,10 @@ const LearningTree = () => {
       {/* Main Content - Split View */}
       <div className="pt-14 h-full flex">
         {/* Canvas Section */}
-        <div className={`h-full transition-all duration-300 ${isPanelOpen ? 'w-1/2 lg:w-3/5' : 'w-full'}`}>
+        <div
+          className="h-full flex-1 min-w-0 transition-[flex] duration-200"
+          style={isPanelOpen ? {} : { flex: 1 }}
+        >
           <TreeCanvas
             ref={canvasRef}
             nodes={nodes}
@@ -433,14 +464,23 @@ const LearningTree = () => {
           />
         </div>
 
+        {/* Resize handle */}
+        {isPanelOpen && (
+          <div
+            role="separator"
+            aria-label="Resize chat panel"
+            onMouseDown={handleResizeStart}
+            className="w-1.5 h-full flex-shrink-0 cursor-col-resize hover:bg-forest-emerald/30 active:bg-forest-emerald/50 transition-colors group"
+          >
+            <div className="w-0.5 h-full mx-auto bg-forest-border group-hover:bg-forest-emerald/60" />
+          </div>
+        )}
+
         {/* Study Panel Section */}
         {isPanelOpen && (
-          <motion.div
-            initial={{ width: 0, opacity: 0 }}
-            animate={{ width: '50%', opacity: 1 }}
-            exit={{ width: 0, opacity: 0 }}
-            className="h-full border-l border-forest-border bg-forest-darker lg:w-2/5"
-            style={{ minWidth: isPanelOpen ? '400px' : 0 }}
+          <div
+            className="h-full flex-shrink-0 border-l border-forest-border bg-forest-darker"
+            style={{ width: panelWidth, minWidth: MIN_PANEL_WIDTH }}
           >
             <StudyPanel
               activeNode={activeNode}
@@ -448,6 +488,7 @@ const LearningTree = () => {
               onAskQuestion={handleAskQuestion}
               onAskBranchFromSelection={handleAskBranchFromSelection}
               onNavigateToNode={handleNavigateToNode}
+              onRenameNode={handleRenameNode}
               onAcceptNewNode={handleAcceptNewNode}
               onDismissNewNodeSuggestion={handleDismissNewNodeSuggestion}
               isAILoading={isAILoading}
@@ -455,7 +496,7 @@ const LearningTree = () => {
               onClose={handleClosePanel}
               activePath={activePath}
             />
-          </motion.div>
+          </div>
         )}
       </div>
     </div>
