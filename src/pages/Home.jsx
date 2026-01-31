@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { ArrowRight } from 'lucide-react'
+import { ArrowRight, TreePine } from 'lucide-react'
 import KnowledgeGraph from '../components/KnowledgeGraph'
 import Logo from '../components/Logo'
 import Button from '../components/Button'
@@ -189,9 +189,12 @@ const Home = () => {
                   </span>
                 </Button>
               </Link>
-              <Button variant="secondary" className="text-lg px-8 py-4">
-                Watch Demo
-              </Button>
+              <Link to="/tree">
+                <Button variant="secondary" className="text-lg px-8 py-4 flex items-center gap-2">
+                  <TreePine size={20} />
+                  Forest
+                </Button>
+              </Link>
             </div>
           </motion.div>
 
