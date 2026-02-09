@@ -1,8 +1,10 @@
 /**
- * OpenAI Service for Knowledge Graph Tutor
+ * AI Service for Knowledge Graph Tutor (Gemini)
+ * Uses Google Gemini for fast chat completions.
  */
 
-const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions'
+const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta'
+const CHAT_MODEL = 'gemini-2.5-flash-lite' // lower demand, cost-efficient; fallback: gemini-2.0-flash
 
 /**
  * Ask AI with contextual heritage and full chat history
@@ -10,12 +12,12 @@ const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions'
  * @param {Array<{role:'user'|'assistant',content:string}>} messages - Current node chat (user/assistant turns)
  */
 export const askAI = async (heritage, messages) => {
-  const apiKey = import.meta.env.VITE_OPENAI_API_KEY
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY
 
   if (!apiKey) {
-    console.error('OpenAI API key not found. Please add VITE_OPENAI_API_KEY to your .env file.')
+    console.error('Gemini API key not found. Please add VITE_GEMINI_API_KEY to your .env file.')
     return {
-      response: 'Error: OpenAI API key not configured. Please add your API key to the .env file.',
+      response: 'Error: Gemini API key not configured. Please add your API key to the .env file.',
       expansionIdeas: [],
       error: 'Missing API key'
     }
@@ -38,44 +40,54 @@ where <short phrase> is one or two words that name the main concept you explaine
 **Unrelated topic only:** Add SUGGEST_NEW_NODE only when the user's latest question is clearly UNRELATED to the current conversation (a completely different subject). If the question is somewhat related or a natural follow-up, just answer in the same chat and do NOT add SUGGEST_NEW_NODE. When you do add it, use one line at the end: SUGGEST_NEW_NODE: <concept name>
 where <concept name> is a short name for the unrelated new topic. Reserve this for real topic switches, not for follow-ups or related questions.`
 
-  const conversation = [
-    { role: 'system', content: systemPrompt },
-    { role: 'user', content: heritage },
-    ...(Array.isArray(messages) ? messages : [{ role: 'user', content: messages }]),
-  ]
+  // Gemini contents: alternate user / model. First message is heritage as user.
+  const contents = [{ role: 'user', parts: [{ text: heritage }] }]
+
+  const messageList = Array.isArray(messages) ? messages : [{ role: 'user', content: messages }]
+  for (const msg of messageList) {
+    const role = msg.role === 'assistant' ? 'model' : 'user'
+    contents.push({ role, parts: [{ text: msg.content || '' }] })
+  }
+
+  const url = `${GEMINI_API_BASE}/models/${CHAT_MODEL}:generateContent?key=${apiKey}`
 
   try {
-    const response = await fetch(OPENAI_API_URL, {
+    const response = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: conversation,
-        temperature: 0.7,
-        max_tokens: 1000,
-      })
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        contents,
+        generationConfig: {
+          temperature: 0.7,
+          maxOutputTokens: 8192,
+        },
+      }),
     })
 
     if (!response.ok) {
-      const errorData = await response.json()
-      throw new Error(errorData.error?.message || 'OpenAI API request failed')
+      const errorData = await response.json().catch(() => ({}))
+      const message = errorData.error?.message || `Gemini API request failed (${response.status})`
+      throw new Error(message)
     }
 
     const data = await response.json()
-    const content = data.choices[0].message.content
+    const textPart = data.candidates?.[0]?.content?.parts?.[0]
+    const content = textPart?.text?.trim() || ''
+
+    if (!content && data.candidates?.[0]?.finishReason) {
+      throw new Error(`Generation stopped: ${data.candidates[0].finishReason}`)
+    }
 
     return {
       response: content,
-      error: null
+      error: null,
     }
   } catch (error) {
-    console.error('OpenAI API Error:', error)
+    console.error('Gemini API Error:', error)
     return {
       response: `Error: ${error.message}. Please check your API key and connection.`,
-      error: error.message
+      error: error.message,
     }
   }
 }

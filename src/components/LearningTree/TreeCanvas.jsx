@@ -268,8 +268,8 @@ const TreeCanvas = forwardRef(({
         </div>
       )}
 
-      {/* Zoom indicator */}
-      <div className="absolute bottom-4 left-4 bg-forest-card/80 backdrop-blur-md border border-forest-border rounded-lg px-3 py-2 text-xs text-forest-light-gray">
+      {/* Zoom indicator (right so bottom-left is free for create/branch buttons) */}
+      <div className="absolute bottom-4 right-4 bg-forest-card/80 backdrop-blur-md border border-forest-border rounded-lg px-3 py-2 text-xs text-forest-light-gray">
         <span className="text-forest-emerald">{(camera.scale * 100).toFixed(0)}%</span>
       </div>
     </div>

@@ -6,20 +6,19 @@ The Learning Tree now features AI-powered selective branching that creates an in
 
 ## Setup
 
-### 1. Get OpenAI API Key
+### 1. Get Gemini API Key
 
-1. Go to [https://platform.openai.com](https://platform.openai.com)
-2. Sign up or log in
-3. Navigate to API Keys
-4. Create a new secret key
-5. Copy the key (starts with `sk-`)
+1. Go to [Google AI Studio](https://aistudio.google.com/apikey)
+2. Sign in with your Google account
+3. Create a new API key
+4. Copy the key
 
 ### 2. Configure Environment
 
 Add to your `.env` file:
 
 ```env
-VITE_OPENAI_API_KEY=sk-your-actual-key-here
+VITE_GEMINI_API_KEY=your-gemini-api-key-here
 ```
 
 **Important**: Never commit your `.env` file (it's already in `.gitignore`)
@@ -41,7 +40,7 @@ Build Context Path (node → root)
     ↓
 Format Contextual Heritage
     ↓
-Send to OpenAI with specialized system prompt
+Send to Gemini with specialized system prompt
     ↓
 Parse Response + Expansion Ideas
     ↓
@@ -183,22 +182,22 @@ Key: `forest-learning-tree`
 
 ## Costs
 
-OpenAI API charges per token:
-- GPT-4o-mini: ~$0.15 per 1M tokens (very cheap)
-- Average question: ~1000-2000 tokens (comprehensive answers)
-- Cost per question: ~$0.00015-$0.0003
+Gemini API charges per token (see [pricing](https://ai.google.dev/pricing)):
+- Gemini 1.5 Flash: fast and low-cost
+- Average question: ~1000–2000 tokens (comprehensive answers)
 
 Settings:
-- Max tokens: 1000 (allows thorough explanations)
+- Model: `gemini-3-flash-preview` (newest fast model, Gemini 3 Flash)
+- Max output tokens: 1024
 - Temperature: 0.7 (balanced creativity)
 - System prompt is concise
 
 ## Troubleshooting
 
 ### "API key not configured"
-- Check `.env` file has `VITE_OPENAI_API_KEY=sk-...`
+- Check `.env` file has `VITE_GEMINI_API_KEY=...`
 - Restart dev server after adding key
-- Key must start with `sk-`
+- Get a key at [Google AI Studio](https://aistudio.google.com/apikey)
 
 ### Responses are generic
 - Ensure context path is building correctly

@@ -47,6 +47,9 @@ body {
   -webkit-user-select: text;
   -moz-user-select: text;
   -ms-user-select: text;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  max-width: 100%;
 }
 
 .select-text,
@@ -106,7 +109,10 @@ body {
   border: 1px solid #1f2d27;
   border-radius: 0.5em;
   padding: 1em;
-  overflow-x: auto;
+  overflow-x: hidden;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+  word-break: break-word;
   margin-bottom: 0.75em;
 }
 
@@ -136,71 +142,30 @@ body {
   font-style: italic;
 }
 
-/* Branch highlight: yellow box with visible sparkles */
-@keyframes highlight-sparks {
-
-  0%,
-  100% {
-    box-shadow:
-      0 0 0 2px rgba(250, 204, 21, 0.9),
-      0 0 12px 3px rgba(250, 204, 21, 0.5),
-      -5px -5px 0 1px rgba(253, 224, 71, 0.9),
-      5px -5px 0 1px rgba(253, 224, 71, 0.9),
-      -5px 5px 0 1px rgba(253, 224, 71, 0.9),
-      5px 5px 0 1px rgba(253, 224, 71, 0.9);
-  }
-
-  25% {
-    box-shadow:
-      0 0 0 2px rgba(250, 204, 21, 0.95),
-      0 0 18px 6px rgba(250, 204, 21, 0.6),
-      -6px -6px 0 2px rgba(254, 240, 138, 1),
-      6px -6px 0 2px rgba(254, 240, 138, 0.7),
-      -6px 6px 0 2px rgba(254, 240, 138, 0.7),
-      6px 6px 0 2px rgba(254, 240, 138, 1);
-  }
-
-  50% {
-    box-shadow:
-      0 0 0 2px rgba(250, 204, 21, 0.9),
-      0 0 14px 4px rgba(250, 204, 21, 0.55),
-      -5px -5px 0 1px rgba(253, 224, 71, 0.8),
-      5px -5px 0 1px rgba(253, 224, 71, 0.8),
-      -5px 5px 0 1px rgba(253, 224, 71, 0.8),
-      5px 5px 0 1px rgba(253, 224, 71, 0.8);
-  }
-
-  75% {
-    box-shadow:
-      0 0 0 2px rgba(250, 204, 21, 0.95),
-      0 0 20px 8px rgba(250, 204, 21, 0.65),
-      -6px -6px 0 2px rgba(254, 240, 138, 0.8),
-      6px -6px 0 2px rgba(254, 240, 138, 1),
-      -6px 6px 0 2px rgba(254, 240, 138, 1),
-      6px 6px 0 2px rgba(254, 240, 138, 0.8);
-  }
+/* Highlight overlay layer (top-most), boxes sit on top of everything */
+.highlight-overlay-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
 }
 
-/* Clickable branch text inside the AI answer (yellow surrounding box + sparkles) */
-.highlight-link-box,
-.prose .highlight-link-box {
-  display: inline !important;
-  padding: 3px 6px !important;
-  margin: 0 2px !important;
-  background: rgba(250, 204, 21, 0.35) !important;
-  color: rgb(253, 224, 71) !important;
-  border: 2px solid rgb(234, 179, 8) !important;
-  border-radius: 4px !important;
-  cursor: pointer !important;
-  font-weight: 500 !important;
-  text-decoration: none !important;
-  animation: highlight-sparks 2s ease-in-out infinite !important;
+/* Highlight overlay: bright yellow box over branched text */
+.highlight-overlay-box {
+  background: rgba(255, 221, 80, 0.45);
+  border: 2px solid rgba(245, 200, 40, 0.8);
+  border-radius: 8px;
+  cursor: pointer;
+  pointer-events: auto;
+  box-sizing: content-box;
+  padding: 2px 3px;
+  transform: translate(-3px, -2px);
+  transition: background 0.15s, box-shadow 0.15s, transform 0.15s;
+  box-shadow: 0 0 10px 2px rgba(245, 210, 60, 0.45);
 }
 
-.highlight-link-box:hover,
-.prose .highlight-link-box:hover {
-  background: rgba(250, 204, 21, 0.5) !important;
-  border-color: rgb(250, 204, 21) !important;
-  color: rgb(254, 240, 138) !important;
-  box-shadow: 0 0 12px 4px rgba(250, 204, 21, 0.45) !important;
+.highlight-overlay-box:hover {
+  background: rgba(255, 231, 120, 0.6);
+  box-shadow: 0 0 14px 3px rgba(245, 210, 60, 0.6);
+  transform: translate(-3px, -2px) scale(1.02);
 }
