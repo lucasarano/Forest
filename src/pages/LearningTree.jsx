@@ -1,16 +1,16 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { Home, PanelLeftClose, PanelLeft, Plus, GitBranch } from 'lucide-react'
+import { Home, PanelLeftClose, PanelLeft, Plus, GitBranch, Loader } from 'lucide-react'
 import TreeCanvas from '../components/LearningTree/TreeCanvas'
 import StudyPanel from '../components/LearningTree/StudyPanel'
 import { buildContextPath, getHeritageString, getActivePath } from '../lib/contextEngine'
 import { askAI } from '../lib/openaiService'
 import { parseModelResponse } from '../lib/responseParser'
-
-const STORAGE_KEY = 'forest-learning-tree'
+import { loadTree, saveTree } from '../lib/treeService'
 
 const LearningTree = () => {
+  const { treeId } = useParams()
   const canvasRef = useRef(null)
   const [nodes, setNodes] = useState([])
   const [edges, setEdges] = useState([])
@@ -18,6 +18,8 @@ const LearningTree = () => {
   const [activePath, setActivePath] = useState([])
   const [isAILoading, setIsAILoading] = useState(false)
   const [loadingNodeId, setLoadingNodeId] = useState(null)
+  const [isTreeLoading, setIsTreeLoading] = useState(true)
+  const [treeSaveError, setTreeSaveError] = useState(null)
   const [isPanelOpen, setIsPanelOpen] = useState(true)
   const [panelWidth, setPanelWidth] = useState(420)
   const [branchFromName, setBranchFromName] = useState('')
@@ -42,44 +44,77 @@ const LearningTree = () => {
     window.addEventListener('mouseup', onUp)
   }, [])
 
-  // Load data from localStorage on mount; migrate legacy question/aiResponse to messages
+  // Load tree data from Supabase on mount
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY)
-      if (saved) {
-        const data = JSON.parse(saved)
-        let loadedNodes = data.nodes || []
-        loadedNodes = loadedNodes.map((n) => {
-          if ((n.messages == null || n.messages.length === 0) && (n.question || n.aiResponse)) {
-            const messages = []
-            if (n.question) messages.push({ role: 'user', content: n.question })
-            if (n.aiResponse) messages.push({ role: 'assistant', content: n.aiResponse })
-            return { ...n, messages }
-          }
-          return { ...n, messages: n.messages || [] }
-        })
-        setNodes(loadedNodes)
-        setEdges(data.edges || [])
+    if (!treeId) {
+      setIsTreeLoading(false)
+      return
+    }
+    let cancelled = false
+    const load = async () => {
+      setIsTreeLoading(true)
+      try {
+        const { data, error } = await loadTree(treeId)
+        if (cancelled) return
+        if (error) {
+          console.error('Failed to load tree from Supabase:', error)
+        } else if (data) {
+          // Migrate legacy question/aiResponse → messages
+          const loadedNodes = (data.nodes || []).map((n) => {
+            if ((!n.messages || n.messages.length === 0) && (n.question || n.aiResponse)) {
+              const messages = []
+              if (n.question) messages.push({ role: 'user', content: n.question })
+              if (n.aiResponse) messages.push({ role: 'assistant', content: n.aiResponse })
+              return { ...n, messages }
+            }
+            return { ...n, messages: n.messages || [] }
+          })
+          setNodes(loadedNodes)
+          setEdges(data.edges || [])
+        }
+      } catch (err) {
+        if (!cancelled) console.error('Failed to load tree:', err)
+      } finally {
+        if (!cancelled) setIsTreeLoading(false)
       }
-    } catch (error) {
-      console.error('Failed to load tree from localStorage:', error)
     }
-  }, [])
+    load()
+    return () => { cancelled = true }
+  }, [treeId])
 
-  // Save data to localStorage whenever nodes or edges change
+  // Debounced auto-save to Supabase whenever nodes or edges change
+  const saveTimerRef = useRef(null)
+  const initialLoadDone = useRef(false)
+
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY)
-      const data = saved ? JSON.parse(saved) : {}
-      data.version = '1.0'
-      data.nodes = nodes
-      data.edges = edges
-      data.lastSaved = Date.now()
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
-    } catch (error) {
-      console.error('Failed to save tree to localStorage:', error)
+    // Don't save on the very first render (before data is loaded)
+    if (isTreeLoading) return
+    if (!initialLoadDone.current) {
+      initialLoadDone.current = true
+      return
     }
-  }, [nodes, edges])
+    if (!treeId) return
+
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+    saveTimerRef.current = setTimeout(async () => {
+      try {
+        const { error } = await saveTree(treeId, nodes, edges)
+        if (error) {
+          console.error('Auto-save failed:', error)
+          setTreeSaveError('Failed to save — changes may be lost')
+        } else {
+          setTreeSaveError(null)
+        }
+      } catch (err) {
+        console.error('Auto-save error:', err)
+        setTreeSaveError('Failed to save — changes may be lost')
+      }
+    }, 2000)
+
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+    }
+  }, [nodes, edges, treeId, isTreeLoading])
 
   // Get the active node object
   const activeNode = nodes.find(n => n.id === activeNodeId)
@@ -542,8 +577,27 @@ const LearningTree = () => {
 
   const hasNoNodes = nodes.length === 0
 
+  // Show a full-screen loading spinner while the tree loads from Supabase
+  if (isTreeLoading) {
+    return (
+      <div className="relative w-full h-screen overflow-hidden bg-forest-darker flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <Loader size={32} className="animate-spin text-forest-emerald" />
+          <p className="text-forest-light-gray text-sm">Loading your tree...</p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="relative w-full h-screen overflow-hidden bg-forest-darker">
+      {/* Save error toast */}
+      {treeSaveError && (
+        <div className="absolute top-4 right-4 z-[100] bg-red-900/80 border border-red-700 text-red-200 text-sm px-4 py-2 rounded-lg shadow-lg">
+          {treeSaveError}
+        </div>
+      )}
+
       {/* Top: Dashboard button + controls (pointer-events-none on bar so panel breadcrumb/branch buttons stay clickable) */}
       <div className="absolute top-0 left-0 z-50 h-14 flex items-center gap-3 px-4 pointer-events-none">
         <Link to="/dashboard" className="pointer-events-auto">

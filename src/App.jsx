@@ -25,7 +25,7 @@ function App() {
             }
           />
           <Route
-            path="/tree"
+            path="/tree/:treeId"
             element={
               <ProtectedRoute>
                 <LearningTree />

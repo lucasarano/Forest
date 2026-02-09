@@ -189,7 +189,7 @@ const Home = () => {
                   </span>
                 </Button>
               </Link>
-              <Link to="/tree">
+              <Link to="/dashboard">
                 <Button variant="secondary" className="text-lg px-8 py-4 flex items-center gap-2">
                   <TreePine size={20} />
                   Forest
