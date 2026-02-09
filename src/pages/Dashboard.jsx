@@ -37,7 +37,10 @@ const Dashboard = () => {
       if (cancelled) return
       if (error) {
         console.error('Failed to load trees:', error)
-        setError('Could not load your trees. Please try again.')
+        const msg = error.message?.includes('relation') || error.code === '42P01'
+          ? 'Database tables not found. Please run supabase_migration.sql in your Supabase SQL Editor first.'
+          : `Could not load your trees: ${error.message || 'unknown error'}`
+        setError(msg)
       } else {
         setTrees(data || [])
       }
@@ -59,7 +62,10 @@ const Dashboard = () => {
     setIsCreating(false)
     if (error) {
       console.error('Failed to create tree:', error)
-      setError('Could not create tree. Please try again.')
+      const msg = error.message?.includes('relation') || error.code === '42P01'
+        ? 'Database tables not found. Please run supabase_migration.sql in your Supabase SQL Editor first.'
+        : `Could not create tree: ${error.message || 'unknown error'}`
+      setError(msg)
       return
     }
     navigate(`/tree/${data.id}`)
