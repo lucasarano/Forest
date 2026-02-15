@@ -5,7 +5,7 @@ import { Home, PanelLeftClose, PanelLeft, Plus, GitBranch, Loader } from 'lucide
 import TreeCanvas from '../components/LearningTree/TreeCanvas'
 import StudyPanel from '../components/LearningTree/StudyPanel'
 import { buildContextPath, getHeritageString, getActivePath } from '../lib/contextEngine'
-import { askAI } from '../lib/openaiService'
+import { askAI, DEFAULT_MODEL } from '../lib/openaiService'
 import { parseModelResponse } from '../lib/responseParser'
 import { loadTree, saveTree } from '../lib/treeService'
 
@@ -23,25 +23,50 @@ const LearningTree = () => {
   const [isPanelOpen, setIsPanelOpen] = useState(true)
   const [panelWidth, setPanelWidth] = useState(420)
   const [branchFromName, setBranchFromName] = useState('')
+  const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem('forest-ai-model') || DEFAULT_MODEL)
   const isResizingRef = useRef(false)
+
+  const handleModelChange = useCallback((modelId) => {
+    setSelectedModel(modelId)
+    localStorage.setItem('forest-ai-model', modelId)
+  }, [])
 
   const MIN_PANEL_WIDTH = 320
   const MAX_PANEL_WIDTH = () => Math.max(MIN_PANEL_WIDTH, window.innerWidth * 0.75)
 
   const handleResizeStart = useCallback((e) => {
     e.preventDefault()
+    const handle = e.currentTarget
+    const pointerId = e.pointerId
+    handle.setPointerCapture(pointerId)
+
+    const maxW = MAX_PANEL_WIDTH()
+
     const onMove = (ev) => {
-      const w = window.innerWidth - ev.clientX
-      setPanelWidth(Math.min(MAX_PANEL_WIDTH(), Math.max(MIN_PANEL_WIDTH, w)))
+      if (ev.pointerId !== pointerId) return
+      const x = Math.max(0, Math.min(window.innerWidth, ev.clientX))
+      const w = window.innerWidth - x
+      setPanelWidth(Math.min(maxW, Math.max(MIN_PANEL_WIDTH, w)))
     }
-    const onUp = () => {
+
+    const cleanup = () => {
+      try { handle.releasePointerCapture(pointerId) } catch (_) {}
+      handle.removeEventListener('pointermove', onMove)
+      handle.removeEventListener('pointerup', cleanup)
+      handle.removeEventListener('pointercancel', cleanup)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
       isResizingRef.current = false
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
     }
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') cleanup()
+    }
+
     isResizingRef.current = true
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
+    handle.addEventListener('pointermove', onMove)
+    handle.addEventListener('pointerup', cleanup)
+    handle.addEventListener('pointercancel', cleanup)
+    document.addEventListener('visibilitychange', onVisibilityChange)
   }, [])
 
   // Load tree data from Supabase on mount
@@ -222,11 +247,16 @@ const LearningTree = () => {
   }, [activeNodeId, deleteNodeById])
 
   // Ask AI a question for a specific node (chat: append user msg, then assistant)
-  const handleAskQuestion = async (nodeId, question) => {
+  // imageForLastUserMessage: { mimeType, data } (base64) to send with the last user message
+  const handleAskQuestion = async (nodeId, question, imageForLastUserMessage = null) => {
     const node = nodes.find(n => n.id === nodeId)
     if (!node) return
 
-    const userMsg = { role: 'user', content: question }
+    const userMsg = {
+      role: 'user',
+      content: question,
+      ...(imageForLastUserMessage && { image: imageForLastUserMessage }),
+    }
     const newMessages = [...(node.messages || []), userMsg]
 
     setNodes(prev => prev.map(n =>
@@ -238,7 +268,7 @@ const LearningTree = () => {
     try {
       const contextPath = buildContextPath(nodeId, nodes)
       const heritage = getHeritageString(contextPath)
-      const { response } = await askAI(heritage, newMessages)
+      const { response } = await askAI(heritage, newMessages, imageForLastUserMessage, selectedModel)
       const { content, concept, suggestNewNode } = parseModelResponse(response)
 
       setNodes(prev => prev.map(n => {
@@ -334,7 +364,7 @@ const LearningTree = () => {
       const contextPath = buildContextPath(parentNodeId, nodes)
       const heritage = getHeritageString(contextPath)
       const branchMessages = [{ role: 'user', content: combinedQuestion }]
-      const { response, error } = await askAI(heritage, branchMessages)
+      const { response, error } = await askAI(heritage, branchMessages, null, selectedModel)
 
       if (error) {
         setNodes(prev => prev.map(n =>
@@ -467,7 +497,7 @@ const LearningTree = () => {
         question: questionContent,
         messages: [lastUser],
       }])
-      const { response } = await askAI(heritage, [lastUser])
+      const { response } = await askAI(heritage, [lastUser], null, selectedModel)
       const { content, concept } = parseModelResponse(response)
       const label = concept || node.suggestNewNode.concept
 
@@ -548,7 +578,7 @@ const LearningTree = () => {
         question: trimmed,
         messages: [userMsg],
       }])
-      const { response } = await askAI(heritage, [userMsg])
+      const { response } = await askAI(heritage, [userMsg], null, selectedModel)
       const { content, concept } = parseModelResponse(response)
       const label = (concept && concept.trim()) || trimmed.slice(0, 30) + (trimmed.length > 30 ? '…' : '')
 
@@ -696,8 +726,8 @@ const LearningTree = () => {
           <div
             role="separator"
             aria-label="Resize chat panel"
-            onMouseDown={handleResizeStart}
-            className="w-1.5 h-full flex-shrink-0 cursor-col-resize hover:bg-forest-emerald/30 active:bg-forest-emerald/50 transition-colors group"
+            onPointerDown={handleResizeStart}
+            className="w-1.5 h-full flex-shrink-0 cursor-col-resize hover:bg-forest-emerald/30 active:bg-forest-emerald/50 transition-colors group touch-none"
           >
             <div className="w-0.5 h-full mx-auto bg-forest-border group-hover:bg-forest-emerald/60" />
           </div>
@@ -724,6 +754,8 @@ const LearningTree = () => {
               loadingNodeId={loadingNodeId}
               onClose={hasNoNodes ? undefined : handleClosePanel}
               activePath={activePath}
+              selectedModel={selectedModel}
+              onModelChange={handleModelChange}
             />
           </div>
         )}

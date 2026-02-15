@@ -1,10 +1,14 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Send, Loader, ChevronRight, X, TreePine, GitBranch, Pencil } from 'lucide-react'
+import { Send, Loader, ChevronRight, ChevronDown, X, TreePine, GitBranch, Pencil, Image as ImageIcon, Cpu } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import rehypeKatex from 'rehype-katex'
+import 'katex/dist/katex.min.css'
 import { useTextSelection } from '../../hooks/useTextSelection'
+import { AI_MODELS } from '../../lib/openaiService'
 
 // Derive messages for display (supports legacy question/aiResponse)
 const getDisplayMessages = (node) => {
@@ -102,15 +106,21 @@ const StudyPanel = ({
   loadingNodeId,
   onClose,
   activePath,
+  selectedModel,
+  onModelChange,
 }) => {
   const [question, setQuestion] = useState('')
+  const [attachedImage, setAttachedImage] = useState(null) // { mimeType, data } (base64) for API; dataUrl = `data:${mimeType};base64,${data}` for preview
   const [firstChatInput, setFirstChatInput] = useState('')
+  const fileInputRef = useRef(null)
   const [branchQuestion, setBranchQuestion] = useState('')
   const [showBranchInput, setShowBranchInput] = useState(false)
   const [branchSelectionSnapshot, setBranchSelectionSnapshot] = useState(null)
   const [isEditingLabel, setIsEditingLabel] = useState(false)
   const [editLabelValue, setEditLabelValue] = useState('')
   const editLabelInputRef = useRef(null)
+  const [isModelPickerOpen, setIsModelPickerOpen] = useState(false)
+  const modelPickerRef = useRef(null)
   const panelRef = useRef(null)
   const contentRef = useRef(null)
   const { selection, clearSelection } = useTextSelection(contentRef)
@@ -137,13 +147,24 @@ const StudyPanel = ({
   const breadcrumbPath = getBreadcrumbPath()
   const messages = getDisplayMessages(activeNode)
   const chatScrollRef = useRef(null)
+  const lastMessageRef = useRef(null)
 
   const hasAssistantContent = messages.some((m) => m.role === 'assistant')
   const isDefaultNodeLabel = /^Node\s*\d+$/.test((activeNode?.label || '').trim())
   const canBranch = activeNode && hasAssistantContent && !isDefaultNodeLabel
 
   useEffect(() => {
-    chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: 'smooth' })
+    const scrollEl = chatScrollRef.current
+    if (!scrollEl) return
+    const lastMsg = messages[messages.length - 1]
+    if (lastMsg?.role === 'assistant') {
+      // Show start of response so user can read downward
+      requestAnimationFrame(() => {
+        lastMessageRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+      })
+    } else {
+      scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'smooth' })
+    }
   }, [messages.length, isAILoading])
 
   // Compute highlight overlay positions by measuring rendered DOM text
@@ -195,11 +216,46 @@ const StudyPanel = ({
     return () => scrollEl.removeEventListener('scroll', handleScroll)
   }, [computeOverlays])
 
+  const ACCEPTED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'] // includes macOS screenshot (PNG)
+
+  const processImageFile = (file) => {
+    if (!file || !ACCEPTED_IMAGE_TYPES.includes(file.type)) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      const dataUrl = reader.result
+      const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/)
+      if (match) {
+        const mimeType = match[1]
+        const data = match[2]
+        setAttachedImage({ mimeType, data })
+      }
+    }
+    reader.readAsDataURL(file)
+  }
+
+  const handleQuestionPaste = (e) => {
+    const file = e.clipboardData?.files?.[0]
+    if (file && ACCEPTED_IMAGE_TYPES.includes(file.type)) {
+      e.preventDefault()
+      processImageFile(file)
+    }
+  }
+
+  const handleQuestionFileChange = (e) => {
+    const file = e.target.files?.[0]
+    if (file) processImageFile(file)
+    e.target.value = ''
+  }
+
   const handleSubmitQuestion = (e) => {
     e.preventDefault()
-    if (question.trim() && !isAILoading && activeNode) {
-      onAskQuestion(activeNode.id, question)
+    const hasText = question.trim().length > 0
+    const hasImage = !!attachedImage
+    if (!isAILoading && activeNode && (hasText || hasImage)) {
+      const text = hasText ? question.trim() : '(Image attached)'
+      onAskQuestion(activeNode.id, text, attachedImage ? { mimeType: attachedImage.mimeType, data: attachedImage.data } : null)
       setQuestion('')
+      setAttachedImage(null)
     }
   }
 
@@ -253,6 +309,25 @@ const StudyPanel = ({
       setEditLabelValue(activeNode.label ?? '')
     }
   }, [activeNode?.id])
+
+  // Close model picker on outside click
+  useEffect(() => {
+    if (!isModelPickerOpen) return
+    const handleClickOutside = (e) => {
+      if (modelPickerRef.current && !modelPickerRef.current.contains(e.target)) {
+        setIsModelPickerOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [isModelPickerOpen])
+
+  const currentModel = AI_MODELS.find(m => m.id === selectedModel) || AI_MODELS[0]
+  const modelGroups = AI_MODELS.reduce((acc, m) => {
+    if (!acc[m.group]) acc[m.group] = []
+    acc[m.group].push(m)
+    return acc
+  }, {})
 
   // First chat: no nodes yet — user starts by typing the topic
   if (!activeNode && hasNoNodesYet) {
@@ -485,6 +560,7 @@ const StudyPanel = ({
                 {messages.map((msg, i) => (
                   <motion.div
                     key={i}
+                    ref={i === messages.length - 1 ? lastMessageRef : null}
                     initial={{ opacity: 0, y: 8 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ duration: 0.2 }}
@@ -492,22 +568,34 @@ const StudyPanel = ({
                   >
                     {msg.role === 'user' && (() => {
                       const branch = parseBranchUserMessage(msg.content)
+                      const imageDataUrl = msg.image?.mimeType && msg.image?.data
+                        ? `data:${msg.image.mimeType};base64,${msg.image.data}`
+                        : null
                       return (
-                        <div className="rounded-xl px-4 py-2.5 bg-forest-card/50 border border-forest-border/50 text-forest-light-gray/90 text-sm max-w-xl">
-                          {branch ? (
-                            <>
-                              <p className="italic">&quot;{branch.selectedText}&quot;</p>
-                              <p className="mt-2">{branch.followUpQuestion}</p>
-                            </>
-                          ) : (
-                            msg.content
+                        <div className="flex items-start gap-3 max-w-xl">
+                          {imageDataUrl && (
+                            <img
+                              src={imageDataUrl}
+                              alt="Attached"
+                              className="w-14 h-14 rounded-lg object-cover border border-forest-border/50 flex-shrink-0"
+                            />
                           )}
+                          <div className="rounded-xl px-4 py-2.5 bg-forest-card/50 border border-forest-border/50 text-forest-light-gray/90 text-sm min-w-0">
+                            {branch ? (
+                              <>
+                                <p className="italic">&quot;{branch.selectedText}&quot;</p>
+                                <p className="mt-2">{branch.followUpQuestion}</p>
+                              </>
+                            ) : (
+                              msg.content
+                            )}
+                          </div>
                         </div>
                       )
                     })()}
                     {msg.role === 'assistant' && (
                       <div className="prose prose-invert prose-sm max-w-none text-white pt-1">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
                           {msg.content}
                         </ReactMarkdown>
                       </div>
@@ -652,17 +740,53 @@ const StudyPanel = ({
       {/* Question Input - Fixed at bottom */}
       <div className="flex-shrink-0 border-t border-forest-border bg-forest-card/50 p-4">
         <form onSubmit={handleSubmitQuestion} className="flex gap-3">
-          <input
-            type="text"
-            value={question}
-            onChange={(e) => setQuestion(e.target.value)}
-            placeholder="Ask a question about this topic..."
-            disabled={isAILoading}
-            className="flex-1 px-4 py-3 bg-forest-darker border border-forest-border rounded-xl text-white placeholder-forest-gray focus:outline-none focus:border-forest-emerald transition-colors"
-          />
+          <div className="flex-1 flex flex-col gap-1.5">
+            {attachedImage && (
+              <div className="flex items-center gap-2 px-2">
+                <span className="inline-flex items-center gap-1.5 text-forest-emerald text-sm">
+                  <ImageIcon size={16} />
+                  <span>Image attached</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setAttachedImage(null)}
+                  className="p-0.5 rounded text-forest-gray hover:text-white hover:bg-forest-border transition-colors"
+                  title="Remove image"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
+            <div className="flex gap-2">
+              <input
+                type="file"
+                ref={fileInputRef}
+                accept="image/png,image/jpeg,image/jpg,image/webp"
+                onChange={handleQuestionFileChange}
+                className="hidden"
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="flex-shrink-0 p-3 rounded-xl border border-forest-border bg-forest-darker text-forest-gray hover:text-forest-emerald hover:border-forest-emerald/50 transition-colors"
+                title="Attach image (PNG, JPEG, WebP — e.g. paste or pick screenshot)"
+              >
+                <ImageIcon size={20} />
+              </button>
+              <input
+                type="text"
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                onPaste={handleQuestionPaste}
+                placeholder="Ask a question... (or paste an image)"
+                disabled={isAILoading}
+                className="flex-1 px-4 py-3 bg-forest-darker border border-forest-border rounded-xl text-white placeholder-forest-gray focus:outline-none focus:border-forest-emerald transition-colors"
+              />
+            </div>
+          </div>
           <button
             type="submit"
-            disabled={isAILoading || !question.trim()}
+            disabled={isAILoading || (!question.trim() && !attachedImage)}
             className="px-5 py-3 bg-forest-emerald text-forest-darker rounded-xl hover:brightness-110 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 font-medium"
           >
             {isAILoading ? (
@@ -679,12 +803,68 @@ const StudyPanel = ({
           </button>
         </form>
 
-        {/* Context hint */}
-        {breadcrumbPath.length > 1 && (
-          <p className="text-xs text-forest-gray mt-2 text-center">
-            AI will use context from your entire learning path
-          </p>
-        )}
+        {/* Model Picker + Context Hint */}
+        <div className="flex items-center justify-between mt-2">
+          <div className="relative" ref={modelPickerRef}>
+            <button
+              type="button"
+              onClick={() => setIsModelPickerOpen(!isModelPickerOpen)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-forest-light-gray hover:text-white hover:bg-forest-border/50 transition-colors"
+            >
+              <Cpu size={13} className="text-forest-gray" />
+              <span>{currentModel.label}</span>
+              <ChevronDown size={12} className={`text-forest-gray transition-transform ${isModelPickerOpen ? 'rotate-180' : ''}`} />
+            </button>
+
+            <AnimatePresence>
+              {isModelPickerOpen && (
+                <motion.div
+                  initial={{ opacity: 0, y: 4, scale: 0.97 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: 4, scale: 0.97 }}
+                  transition={{ duration: 0.12 }}
+                  className="absolute bottom-full left-0 mb-2 w-56 bg-forest-card border border-forest-border rounded-xl shadow-2xl overflow-hidden z-50"
+                >
+                  <div className="py-1.5 max-h-72 overflow-y-auto">
+                    {Object.entries(modelGroups).map(([group, models]) => (
+                      <div key={group}>
+                        <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-forest-gray">
+                          {group}
+                        </div>
+                        {models.map((m) => (
+                          <button
+                            key={m.id}
+                            type="button"
+                            onClick={() => {
+                              onModelChange?.(m.id)
+                              setIsModelPickerOpen(false)
+                            }}
+                            className={`w-full text-left px-3 py-2 text-sm transition-colors flex items-center gap-2 ${
+                              m.id === selectedModel
+                                ? 'text-forest-emerald bg-forest-emerald/10'
+                                : 'text-forest-light-gray hover:text-white hover:bg-forest-border/40'
+                            }`}
+                          >
+                            <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                              m.id === selectedModel ? 'bg-forest-emerald' : 'bg-transparent'
+                            }`} />
+                            {m.label}
+                          </button>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          {breadcrumbPath.length > 1 && (
+            <p className="text-xs text-forest-gray">
+              AI uses your entire learning path
+            </p>
+          )}
+        </div>
       </div>
 
       {highlightOverlays.length > 0 && createPortal(

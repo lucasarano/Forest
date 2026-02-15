@@ -1,5 +1,6 @@
-import React, { useState, useRef, useEffect, forwardRef, useImperativeHandle } from 'react'
+import React, { useState, useRef, useEffect, useCallback, forwardRef, useImperativeHandle } from 'react'
 import { motion } from 'framer-motion'
+import { Focus } from 'lucide-react'
 import TreeNode from './TreeNode'
 import TreeEdge from './TreeEdge'
 import { getActivePath } from '../../lib/contextEngine'
@@ -48,6 +49,36 @@ const TreeCanvas = forwardRef(({
     }
   }, [camera])
 
+  // Center view on all nodes and zoom to fit
+  const centerAndFit = useCallback(() => {
+    if (!canvasRef.current || nodes.length === 0) return
+    const rect = canvasRef.current.getBoundingClientRect()
+    const viewW = rect.width
+    const viewH = rect.height
+
+    const padding = 80 // px margin around nodes
+    const minX = Math.min(...nodes.map(n => n.position.x))
+    const maxX = Math.max(...nodes.map(n => n.position.x))
+    const minY = Math.min(...nodes.map(n => n.position.y))
+    const maxY = Math.max(...nodes.map(n => n.position.y))
+
+    const contentW = maxX - minX + padding * 2
+    const contentH = maxY - minY + padding * 2
+    const centerX = (minX + maxX) / 2
+    const centerY = (minY + maxY) / 2
+
+    const scaleX = viewW / contentW
+    const scaleY = viewH / contentH
+    const scale = Math.min(scaleX, scaleY, 1.2) // cap at 120% so we don't zoom in too far for 1 node
+    const scaleClamped = Math.max(0.2, Math.min(3, scale))
+
+    setCamera({
+      x: viewW / 2 - centerX * scaleClamped,
+      y: viewH / 2 - centerY * scaleClamped,
+      scale: scaleClamped,
+    })
+  }, [nodes])
+
   // Expose methods to parent
   useImperativeHandle(ref, () => ({
     centerOnNode: (nodeId) => {
@@ -61,8 +92,9 @@ const TreeCanvas = forwardRef(({
         }))
       }
     },
+    centerAndFit,
     getCamera: () => camera,
-  }))
+  }), [nodes, centerAndFit, camera])
 
   // Generate unique ID
   const generateId = () => `node_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
@@ -268,9 +300,21 @@ const TreeCanvas = forwardRef(({
         </div>
       )}
 
-      {/* Zoom indicator (right so bottom-left is free for create/branch buttons) */}
-      <div className="absolute bottom-4 right-4 bg-forest-card/80 backdrop-blur-md border border-forest-border rounded-lg px-3 py-2 text-xs text-forest-light-gray">
-        <span className="text-forest-emerald">{(camera.scale * 100).toFixed(0)}%</span>
+      {/* Canvas controls: Center + Zoom indicator */}
+      <div className="absolute bottom-4 right-4 flex items-center gap-2">
+        {nodes.length > 0 && (
+          <button
+            type="button"
+            onClick={centerAndFit}
+            className="p-2 bg-forest-card/80 backdrop-blur-md border border-forest-border rounded-lg text-forest-light-gray hover:text-forest-emerald hover:border-forest-emerald/50 transition-colors"
+            title="Center and fit all nodes"
+          >
+            <Focus size={18} />
+          </button>
+        )}
+        <div className="bg-forest-card/80 backdrop-blur-md border border-forest-border rounded-lg px-3 py-2 text-xs text-forest-light-gray">
+          <span className="text-forest-emerald">{(camera.scale * 100).toFixed(0)}%</span>
+        </div>
       </div>
     </div>
   )

@@ -142,6 +142,22 @@ body {
   font-style: italic;
 }
 
+/* KaTeX math in dark chat - use light colors */
+.prose-invert .katex,
+.prose-invert .katex .mord,
+.prose-invert .katex .mop,
+.prose-invert .katex .mbin,
+.prose-invert .katex .mrel,
+.prose-invert .katex .mopen,
+.prose-invert .katex .mclose {
+  color: #e5e7eb !important;
+}
+
+.prose-invert .katex .mfrac>span {
+  color: #e5e7eb !important;
+  border-color: #e5e7eb !important;
+}
+
 /* Highlight overlay layer (top-most), boxes sit on top of everything */
 .highlight-overlay-layer {
   position: fixed;
