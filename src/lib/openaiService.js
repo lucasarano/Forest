@@ -7,9 +7,11 @@
 
 export const AI_MODELS = [
   // Gemini
-  { id: 'gemini-2.5-pro',        label: 'Gemini 2.5 Pro',        provider: 'gemini', group: 'Gemini' },
-  { id: 'gemini-2.5-flash',      label: 'Gemini 2.5 Flash',      provider: 'gemini', group: 'Gemini' },
-  { id: 'gemini-2.0-flash',      label: 'Gemini 2.0 Flash',      provider: 'gemini', group: 'Gemini' },
+  { id: 'gemini-3-pro-preview',  label: 'Gemini 3 Pro',        provider: 'gemini', group: 'Gemini' },
+  { id: 'gemini-3-flash-preview', label: 'Gemini 3 Flash',      provider: 'gemini', group: 'Gemini' },
+  { id: 'gemini-2.5-pro',        label: 'Gemini 2.5 Pro',       provider: 'gemini', group: 'Gemini' },
+  { id: 'gemini-2.5-flash',      label: 'Gemini 2.5 Flash',     provider: 'gemini', group: 'Gemini' },
+  { id: 'gemini-2.0-flash',      label: 'Gemini 2.0 Flash',     provider: 'gemini', group: 'Gemini' },
   { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite', provider: 'gemini', group: 'Gemini' },
   // OpenAI / ChatGPT
   { id: 'gpt-5.2',      label: 'GPT-5.2',      provider: 'openai', group: 'ChatGPT' },

@@ -20,9 +20,24 @@ const TreeCanvas = forwardRef(({
 }, ref) => {
   const canvasRef = useRef(null)
   const [camera, setCamera] = useState({ x: 0, y: 0, scale: 1 })
+  const cameraRef = useRef(camera)
+  cameraRef.current = camera
   const [isPanning, setIsPanning] = useState(false)
-  const [panStart, setPanStart] = useState({ x: 0, y: 0 })
   const [hoveredNode, setHoveredNode] = useState(null)
+
+  // Refs for stable callbacks (avoid stale closures)
+  const nodesRef = useRef(nodes)
+  nodesRef.current = nodes
+  const edgesRef = useRef(edges)
+  edgesRef.current = edges
+  const activeNodeIdRef = useRef(activeNodeId)
+  activeNodeIdRef.current = activeNodeId
+
+  // Panning refs (avoid state updates on every mouse move)
+  const isPanningRef = useRef(false)
+  const panStartRef = useRef({ x: 0, y: 0 })
+  const panDeltaRef = useRef({ dx: 0, dy: 0 })
+  const panRafRef = useRef(null)
 
   // Load camera from localStorage on mount
   useEffect(() => {
@@ -37,30 +52,39 @@ const TreeCanvas = forwardRef(({
     }
   }, [])
 
-  // Save camera to localStorage whenever it changes
+  // Debounced save of camera to localStorage
+  const cameraSaveTimerRef = useRef(null)
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY)
-      const data = saved ? JSON.parse(saved) : {}
-      data.camera = camera
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
-    } catch (error) {
-      console.error('Failed to save camera to localStorage:', error)
+    if (cameraSaveTimerRef.current) clearTimeout(cameraSaveTimerRef.current)
+    cameraSaveTimerRef.current = setTimeout(() => {
+      try {
+        const saved = localStorage.getItem(STORAGE_KEY)
+        const data = saved ? JSON.parse(saved) : {}
+        data.camera = camera
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
+      } catch (error) {
+        console.error('Failed to save camera to localStorage:', error)
+      }
+      cameraSaveTimerRef.current = null
+    }, 500)
+    return () => {
+      if (cameraSaveTimerRef.current) clearTimeout(cameraSaveTimerRef.current)
     }
   }, [camera])
 
   // Center view on all nodes and zoom to fit
   const centerAndFit = useCallback(() => {
-    if (!canvasRef.current || nodes.length === 0) return
+    if (!canvasRef.current || nodesRef.current.length === 0) return
     const rect = canvasRef.current.getBoundingClientRect()
     const viewW = rect.width
     const viewH = rect.height
 
-    const padding = 80 // px margin around nodes
-    const minX = Math.min(...nodes.map(n => n.position.x))
-    const maxX = Math.max(...nodes.map(n => n.position.x))
-    const minY = Math.min(...nodes.map(n => n.position.y))
-    const maxY = Math.max(...nodes.map(n => n.position.y))
+    const padding = 80
+    const ns = nodesRef.current
+    const minX = Math.min(...ns.map(n => n.position.x))
+    const maxX = Math.max(...ns.map(n => n.position.x))
+    const minY = Math.min(...ns.map(n => n.position.y))
+    const maxY = Math.max(...ns.map(n => n.position.y))
 
     const contentW = maxX - minX + padding * 2
     const contentH = maxY - minY + padding * 2
@@ -69,7 +93,7 @@ const TreeCanvas = forwardRef(({
 
     const scaleX = viewW / contentW
     const scaleY = viewH / contentH
-    const scale = Math.min(scaleX, scaleY, 1.2) // cap at 120% so we don't zoom in too far for 1 node
+    const scale = Math.min(scaleX, scaleY, 1.2)
     const scaleClamped = Math.max(0.2, Math.min(3, scale))
 
     setCamera({
@@ -77,12 +101,12 @@ const TreeCanvas = forwardRef(({
       y: viewH / 2 - centerY * scaleClamped,
       scale: scaleClamped,
     })
-  }, [nodes])
+  }, [])
 
   // Expose methods to parent
   useImperativeHandle(ref, () => ({
     centerOnNode: (nodeId) => {
-      const node = nodes.find(n => n.id === nodeId)
+      const node = nodesRef.current.find(n => n.id === nodeId)
       if (node && canvasRef.current) {
         const rect = canvasRef.current.getBoundingClientRect()
         setCamera(prev => ({
@@ -93,24 +117,24 @@ const TreeCanvas = forwardRef(({
       }
     },
     centerAndFit,
-    getCamera: () => camera,
-  }), [nodes, centerAndFit, camera])
+    getCamera: () => cameraRef.current,
+  }), [centerAndFit])
 
   // Generate unique ID
   const generateId = () => `node_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
 
   // Create root node on double click (only on canvas, not on nodes)
-  const handleDoubleClick = (e) => {
-    // Don't create node if clicking on an existing node
+  const handleDoubleClick = useCallback((e) => {
     if (e.target.closest('.tree-node')) return
 
     const rect = canvasRef.current.getBoundingClientRect()
-    const x = (e.clientX - rect.left - camera.x) / camera.scale
-    const y = (e.clientY - rect.top - camera.y) / camera.scale
+    const cam = cameraRef.current
+    const x = (e.clientX - rect.left - cam.x) / cam.scale
+    const y = (e.clientY - rect.top - cam.y) / cam.scale
 
     const newNode = {
       id: generateId(),
-      label: `Node ${nodes.length + 1}`,
+      label: `Node ${nodesRef.current.length + 1}`,
       position: { x, y },
       parentId: null,
       question: '',
@@ -120,63 +144,89 @@ const TreeCanvas = forwardRef(({
       messages: [],
     }
 
-    setNodes([...nodes, newNode])
-
-    // Auto-select the new node
+    setNodes(prev => [...prev, newNode])
     setActiveNodeId(newNode.id)
     setActivePath([])
-  }
+  }, [setNodes, setActiveNodeId, setActivePath])
 
-  // Handle canvas panning
-  const handleMouseDown = (e) => {
-    // Only pan if clicking on the canvas itself (not on nodes)
+  // ─── Panning with RAF batching ───────────────────────────────────────────────
+
+  const handleMouseDown = useCallback((e) => {
     if (e.target.closest('.tree-node')) return
-
+    isPanningRef.current = true
     setIsPanning(true)
-    setPanStart({ x: e.clientX, y: e.clientY })
-  }
+    panStartRef.current = { x: e.clientX, y: e.clientY }
+    panDeltaRef.current = { dx: 0, dy: 0 }
+  }, [])
 
-  const handleMouseMove = (e) => {
-    if (isPanning) {
-      const dx = e.clientX - panStart.x
-      const dy = e.clientY - panStart.y
+  const handleMouseMove = useCallback((e) => {
+    if (!isPanningRef.current) return
 
+    const dx = e.clientX - panStartRef.current.x
+    const dy = e.clientY - panStartRef.current.y
+    panStartRef.current = { x: e.clientX, y: e.clientY }
+
+    panDeltaRef.current.dx += dx
+    panDeltaRef.current.dy += dy
+
+    if (panRafRef.current === null) {
+      panRafRef.current = requestAnimationFrame(() => {
+        const { dx: totalDx, dy: totalDy } = panDeltaRef.current
+        panDeltaRef.current = { dx: 0, dy: 0 }
+        setCamera(prev => ({
+          ...prev,
+          x: prev.x + totalDx,
+          y: prev.y + totalDy,
+        }))
+        panRafRef.current = null
+      })
+    }
+  }, [])
+
+  const handleMouseUp = useCallback(() => {
+    if (!isPanningRef.current) return
+    isPanningRef.current = false
+    setIsPanning(false)
+
+    // Flush any pending delta
+    if (panRafRef.current !== null) {
+      cancelAnimationFrame(panRafRef.current)
+      panRafRef.current = null
+    }
+    const { dx, dy } = panDeltaRef.current
+    if (dx !== 0 || dy !== 0) {
+      panDeltaRef.current = { dx: 0, dy: 0 }
       setCamera(prev => ({
         ...prev,
         x: prev.x + dx,
         y: prev.y + dy,
       }))
-
-      setPanStart({ x: e.clientX, y: e.clientY })
     }
-  }
+  }, [])
 
-  const handleMouseUp = () => {
-    setIsPanning(false)
-  }
+  // ─── Zoom with mouse wheel ───────────────────────────────────────────────────
 
-  // Handle zoom with mouse wheel - centered on cursor
-  const handleWheel = (e) => {
+  const handleWheel = useCallback((e) => {
     e.preventDefault()
-
-    const rect = canvasRef.current.getBoundingClientRect()
+    const cam = cameraRef.current
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const rect = canvas.getBoundingClientRect()
     const mouseX = e.clientX - rect.left
     const mouseY = e.clientY - rect.top
 
-    // Mouse position in world coordinates (before zoom)
-    const worldX = (mouseX - camera.x) / camera.scale
-    const worldY = (mouseY - camera.y) / camera.scale
+    const worldX = (mouseX - cam.x) / cam.scale
+    const worldY = (mouseY - cam.y) / cam.scale
 
     const zoomSpeed = 0.003
     const delta = -e.deltaY * zoomSpeed
-    const newScale = Math.min(3, Math.max(0.2, camera.scale + delta))
+    const newScale = Math.min(3, Math.max(0.2, cam.scale + delta))
 
-    // Adjust camera position so zoom happens at mouse cursor
     const newX = mouseX - worldX * newScale
     const newY = mouseY - worldY * newScale
 
     setCamera({ x: newX, y: newY, scale: newScale })
-  }
+  }, [])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -184,36 +234,32 @@ const TreeCanvas = forwardRef(({
       canvas.addEventListener('wheel', handleWheel, { passive: false })
       return () => canvas.removeEventListener('wheel', handleWheel)
     }
-  }, [camera])
+  }, [handleWheel])
 
-  // Update node position
-  const handleNodeDrag = (nodeId, newPosition) => {
-    setNodes(nodes.map(n =>
+  // ─── Stable node callbacks (never change → React.memo on TreeNode works) ────
+
+  const handleNodeDrag = useCallback((nodeId, newPosition) => {
+    setNodes(prev => prev.map(n =>
       n.id === nodeId ? { ...n, position: newPosition } : n
     ))
-  }
+  }, [setNodes])
 
-  // Update node label
-  const handleLabelChange = (nodeId, newLabel) => {
-    setNodes(nodes.map(n =>
+  const handleLabelChange = useCallback((nodeId, newLabel) => {
+    setNodes(prev => prev.map(n =>
       n.id === nodeId ? { ...n, label: newLabel } : n
     ))
-  }
+  }, [setNodes])
 
-  // Click node to select
-  const handleNodeClick = (nodeId) => {
-    if (activeNodeId === nodeId) {
-      // Clicking the same node again - deselect
+  const handleNodeClick = useCallback((nodeId) => {
+    if (activeNodeIdRef.current === nodeId) {
       setActiveNodeId(null)
       setActivePath([])
     } else {
-      // Select this node
       setActiveNodeId(nodeId)
-      // Calculate and highlight active path
-      const pathEdgeIds = getActivePath(nodeId, nodes, edges)
+      const pathEdgeIds = getActivePath(nodeId, nodesRef.current, edgesRef.current)
       setActivePath(pathEdgeIds)
     }
-  }
+  }, [setActiveNodeId, setActivePath])
 
   return (
     <div
@@ -247,6 +293,7 @@ const TreeCanvas = forwardRef(({
           position: 'absolute',
           width: '100%',
           height: '100%',
+          willChange: 'transform',
         }}
       >
         {/* Edges */}

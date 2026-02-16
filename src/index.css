@@ -185,3 +185,71 @@ body {
   box-shadow: 0 0 14px 3px rgba(245, 210, 60, 0.6);
   transform: translate(-3px, -2px) scale(1.02);
 }
+
+/* ─── Performance: CSS animations replacing Framer Motion infinite JS loops ─── */
+
+/* Node pulse ring when selected */
+@keyframes node-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.6; }
+  50% { transform: scale(1.4); opacity: 0; }
+}
+.node-pulse-ring {
+  animation: node-pulse 2s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+/* Node content indicator ring */
+@keyframes node-content-ring {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}
+.node-content-ring {
+  animation: node-content-ring 3s ease-in-out infinite;
+  will-change: opacity;
+}
+
+/* Edge glow animation (active/hovered) */
+@keyframes edge-glow {
+  0%, 100% { opacity: 0.2; }
+  50% { opacity: 0.4; }
+}
+.edge-glow-active {
+  animation: edge-glow 2s ease-in-out infinite;
+}
+
+/* Edge main shape animation (active/hovered) */
+@keyframes edge-main {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 0.8; }
+}
+.edge-main-active {
+  animation: edge-main 2s ease-in-out infinite;
+}
+
+/* Edge particle dash animation */
+@keyframes edge-dash {
+  to { stroke-dashoffset: 24px; }
+}
+.edge-dash-animate {
+  animation: edge-dash 0.8s linear infinite;
+}
+
+/* Message fade-in (replaces framer-motion per-message animation) */
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in-up {
+  animation: fade-in-up 0.2s ease-out both;
+}
+
+/* Node circle hover/active (replaces framer-motion whileHover/whileTap) */
+.node-circle {
+  transition: transform 150ms ease, border-color 150ms, box-shadow 150ms;
+}
+.node-circle:hover {
+  transform: scale(1.1);
+}
+.node-circle:active {
+  transform: scale(0.95);
+}

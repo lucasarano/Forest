@@ -1,7 +1,6 @@
-import React, { useState } from 'react'
-import { motion } from 'framer-motion'
+import React, { useState, useRef, useCallback, useEffect } from 'react'
 
-const TreeNode = ({
+const TreeNode = React.memo(({
   node,
   onDrag,
   onClick,
@@ -11,36 +10,70 @@ const TreeNode = ({
   onLabelChange,
   onDoubleClickNode,
 }) => {
-  const [isDragging, setIsDragging] = useState(false)
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
+  const isDraggingRef = useRef(false)
+  const dragStartRef = useRef({ x: 0, y: 0 })
+  const dragRafRef = useRef(null)
   const [isEditing, setIsEditing] = useState(false)
   const [editValue, setEditValue] = useState(node.label)
 
-  // Determine if text should be outside (when zoomed out)
+  // Refs for values used inside drag closures (avoids stale captures)
+  const scaleRef = useRef(scale)
+  scaleRef.current = scale
+  const onDragRef = useRef(onDrag)
+  onDragRef.current = onDrag
+  const nodeIdRef = useRef(node.id)
+  nodeIdRef.current = node.id
+
   const textOutside = scale < 0.6
+  const hasContent = (node.messages?.some(m => m.role === 'assistant')) || !!node.aiResponse
 
-  const handleMouseDown = (e) => {
+  // Sync editValue when label changes externally
+  useEffect(() => {
+    setEditValue(node.label)
+  }, [node.label])
+
+  const handleMouseDown = useCallback((e) => {
     e.stopPropagation()
-    setIsDragging(true)
-    setDragStart({
-      x: e.clientX / scale - node.position.x,
-      y: e.clientY / scale - node.position.y,
-    })
-  }
-
-  const handleMouseMove = (e) => {
-    if (isDragging) {
-      const newX = e.clientX / scale - dragStart.x
-      const newY = e.clientY / scale - dragStart.y
-      onDrag(node.id, { x: newX, y: newY })
+    isDraggingRef.current = true
+    const s = scaleRef.current
+    dragStartRef.current = {
+      x: e.clientX / s - node.position.x,
+      y: e.clientY / s - node.position.y,
     }
-  }
 
-  const handleMouseUp = () => {
-    setIsDragging(false)
-  }
+    let latestPos = null
 
-  const handleDoubleClick = (e) => {
+    const onMouseMove = (ev) => {
+      if (!isDraggingRef.current) return
+      const s = scaleRef.current
+      latestPos = {
+        x: ev.clientX / s - dragStartRef.current.x,
+        y: ev.clientY / s - dragStartRef.current.y,
+      }
+      if (dragRafRef.current === null) {
+        dragRafRef.current = requestAnimationFrame(() => {
+          if (latestPos) onDragRef.current(nodeIdRef.current, latestPos)
+          dragRafRef.current = null
+        })
+      }
+    }
+
+    const onMouseUp = () => {
+      isDraggingRef.current = false
+      if (dragRafRef.current !== null) {
+        cancelAnimationFrame(dragRafRef.current)
+        if (latestPos) onDragRef.current(nodeIdRef.current, latestPos)
+        dragRafRef.current = null
+      }
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+    }
+
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+  }, [node.position.x, node.position.y])
+
+  const handleDoubleClick = useCallback((e) => {
     e.stopPropagation()
     if (onDoubleClickNode) {
       onDoubleClickNode(node.id)
@@ -48,71 +81,57 @@ const TreeNode = ({
       setIsEditing(true)
       setEditValue(node.label)
     }
-  }
+  }, [node.id, node.label, onDoubleClickNode])
 
-  const handleBlur = () => {
+  const handleBlur = useCallback(() => {
     setIsEditing(false)
     if (editValue.trim() && editValue !== node.label) {
       onLabelChange(node.id, editValue.trim())
     } else {
       setEditValue(node.label)
     }
-  }
+  }, [editValue, node.label, node.id, onLabelChange])
 
-  const handleKeyDown = (e) => {
+  const handleKeyDown = useCallback((e) => {
     if (e.key === 'Enter') {
       e.target.blur()
     } else if (e.key === 'Escape') {
       setEditValue(node.label)
       setIsEditing(false)
     }
-  }
+  }, [node.label])
 
-  React.useEffect(() => {
-    if (isDragging) {
-      window.addEventListener('mousemove', handleMouseMove)
-      window.addEventListener('mouseup', handleMouseUp)
-      return () => {
-        window.removeEventListener('mousemove', handleMouseMove)
-        window.removeEventListener('mouseup', handleMouseUp)
-      }
-    }
-  }, [isDragging, dragStart])
+  const handleClick = useCallback((e) => {
+    e.stopPropagation()
+    if (!isEditing) onClick(node.id)
+  }, [isEditing, node.id, onClick])
 
-  // Node has AI content (messages or legacy aiResponse)
-  const hasContent = (node.messages?.some(m => m.role === 'assistant')) || !!node.aiResponse
+  const handleMouseEnter = useCallback(() => onHover(node.id), [node.id, onHover])
+  const handleMouseLeave = useCallback(() => onHover(null), [onHover])
 
   return (
-    <motion.div
+    <div
       className="absolute cursor-pointer tree-node"
       style={{
         left: node.position.x,
         top: node.position.y,
-        x: '-50%',
-        y: '-50%',
+        transform: 'translate(-50%, -50%)',
       }}
       onMouseDown={handleMouseDown}
-      onClick={(e) => {
-        e.stopPropagation()
-        if (!isEditing) {
-          onClick(node.id)
-        }
-      }}
+      onClick={handleClick}
       onDoubleClick={handleDoubleClick}
-      onMouseEnter={() => onHover(node.id)}
-      onMouseLeave={() => onHover(null)}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
     >
       {/* Circular Node */}
-      <motion.div
-        whileHover={{ scale: 1.1 }}
-        whileTap={{ scale: 0.95 }}
+      <div
         className={`
           relative w-14 h-14
           bg-forest-card/80 backdrop-blur-md
           border-2 ${isSelected ? 'border-forest-emerald shadow-lg shadow-forest-emerald/30' : 'border-forest-border'}
           rounded-full
-          transition-all duration-150
           flex items-center justify-center
+          node-circle
         `}
       >
         {/* Glowing gradient background */}
@@ -123,20 +142,9 @@ const TreeNode = ({
           transition-opacity duration-150
         `} />
 
-        {/* Pulse animation when selected */}
+        {/* Pulse animation when selected - CSS driven */}
         {isSelected && (
-          <motion.div
-            className="absolute inset-0 rounded-full border-2 border-forest-emerald"
-            animate={{
-              scale: [1, 1.4, 1],
-              opacity: [0.6, 0, 0.6],
-            }}
-            transition={{
-              duration: 2,
-              repeat: Infinity,
-              ease: 'easeInOut',
-            }}
-          />
+          <div className="absolute inset-0 rounded-full border-2 border-forest-emerald node-pulse-ring" />
         )}
 
         {/* Center indicator */}
@@ -150,21 +158,11 @@ const TreeNode = ({
           transition-all duration-150
         `} />
 
-        {/* Content indicator ring */}
+        {/* Content indicator ring - CSS driven */}
         {hasContent && (
-          <motion.div
-            className="absolute inset-1 rounded-full border border-forest-emerald/40"
-            animate={{
-              opacity: [0.4, 0.8, 0.4],
-            }}
-            transition={{
-              duration: 3,
-              repeat: Infinity,
-              ease: 'easeInOut',
-            }}
-          />
+          <div className="absolute inset-1 rounded-full border border-forest-emerald/40 node-content-ring" />
         )}
-      </motion.div>
+      </div>
 
       {/* Label */}
       {textOutside ? (
@@ -222,8 +220,10 @@ const TreeNode = ({
           )}
         </div>
       )}
-    </motion.div>
+    </div>
   )
-}
+})
+
+TreeNode.displayName = 'TreeNode'
 
 export default TreeNode

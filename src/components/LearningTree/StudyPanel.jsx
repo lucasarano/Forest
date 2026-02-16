@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react'
+import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Send, Loader, ChevronRight, ChevronDown, X, TreePine, GitBranch, Pencil, Image as ImageIcon, Cpu } from 'lucide-react'
@@ -9,6 +9,13 @@ import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
 import { useTextSelection } from '../../hooks/useTextSelection'
 import { AI_MODELS } from '../../lib/openaiService'
+
+// ─── Module-level constants (stable references, never recreated) ───────────────
+
+const REMARK_PLUGINS = [remarkGfm, remarkMath]
+const REHYPE_PLUGINS = [rehypeKatex]
+
+// ─── Helpers ───────────────────────────────────────────────────────────────────
 
 // Derive messages for display (supports legacy question/aiResponse)
 const getDisplayMessages = (node) => {
@@ -38,7 +45,6 @@ const parseBranchUserMessage = (content) => {
 const findTextRects = (container, searchText) => {
   if (!container || !searchText) return []
 
-  // Collect all text nodes
   const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT)
   const textNodes = []
   let tn
@@ -48,7 +54,6 @@ const findTextRects = (container, searchText) => {
   const whitespaceTolerant = escaped.replace(/\s+/g, '\\s+')
   const textRegex = new RegExp(whitespaceTolerant)
 
-  // 2. Concatenate all text nodes and search across boundaries
   let fullText = ''
   const nodeMap = []
   for (const node of textNodes) {
@@ -91,7 +96,64 @@ const mergeRects = (rects) => {
   }]
 }
 
-const StudyPanel = ({
+// ─── Memoized Message Component ────────────────────────────────────────────────
+// This is the KEY optimization for typing performance. Each message (especially
+// assistant messages with heavy ReactMarkdown + KaTeX) is memoized individually.
+// When the user types in the input, only the input re-renders — not every message.
+
+const MemoizedMessage = React.memo(({ msg, isLast, lastMessageRef }) => {
+  if (msg.role === 'user') {
+    const branch = parseBranchUserMessage(msg.content)
+    const imageDataUrl = msg.image?.mimeType && msg.image?.data
+      ? `data:${msg.image.mimeType};base64,${msg.image.data}`
+      : null
+    return (
+      <div
+        ref={isLast ? lastMessageRef : null}
+        className="mt-6 flex justify-end animate-fade-in-up"
+      >
+        <div className="flex items-start gap-3 max-w-xl">
+          {imageDataUrl && (
+            <img
+              src={imageDataUrl}
+              alt="Attached"
+              className="w-14 h-14 rounded-lg object-cover border border-forest-border/50 flex-shrink-0"
+            />
+          )}
+          <div className="rounded-xl px-4 py-2.5 bg-forest-card/50 border border-forest-border/50 text-forest-light-gray/90 text-sm min-w-0">
+            {branch ? (
+              <>
+                <p className="italic">&quot;{branch.selectedText}&quot;</p>
+                <p className="mt-2">{branch.followUpQuestion}</p>
+              </>
+            ) : (
+              msg.content
+            )}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div
+      ref={isLast ? lastMessageRef : null}
+      className="mb-6 pb-4 border-b border-forest-border/30 animate-fade-in-up"
+    >
+      <div className="prose prose-invert prose-sm max-w-none text-white pt-1">
+        <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS}>
+          {msg.content}
+        </ReactMarkdown>
+      </div>
+    </div>
+  )
+})
+
+MemoizedMessage.displayName = 'MemoizedMessage'
+
+// ─── StudyPanel Component ──────────────────────────────────────────────────────
+
+const StudyPanel = React.memo(({
   activeNode,
   nodes,
   hasNoNodesYet = false,
@@ -110,7 +172,7 @@ const StudyPanel = ({
   onModelChange,
 }) => {
   const [question, setQuestion] = useState('')
-  const [attachedImage, setAttachedImage] = useState(null) // { mimeType, data } (base64) for API; dataUrl = `data:${mimeType};base64,${data}` for preview
+  const [attachedImage, setAttachedImage] = useState(null)
   const [firstChatInput, setFirstChatInput] = useState('')
   const fileInputRef = useRef(null)
   const [branchQuestion, setBranchQuestion] = useState('')
@@ -125,26 +187,24 @@ const StudyPanel = ({
   const contentRef = useRef(null)
   const { selection, clearSelection } = useTextSelection(contentRef)
   const [highlightOverlays, setHighlightOverlays] = useState([])
+  const [popupPosition, setPopupPosition] = useState({ left: 0, top: 0 })
+  const [panelRect, setPanelRect] = useState(null)
 
-  // Use snapshot when form is expanded so popup stays visible after selection is cleared (e.g. input focus)
+  // Use snapshot when form is expanded
   const effectiveSelection = showBranchInput ? branchSelectionSnapshot : selection
 
   // Build breadcrumb path from root to active node
-  const getBreadcrumbPath = () => {
+  const breadcrumbPath = useMemo(() => {
     if (!activeNode) return []
-
     const path = []
     let current = activeNode
-
     while (current) {
       path.unshift(current)
       current = nodes.find(n => n.id === current.parentId)
     }
-
     return path
-  }
+  }, [activeNode?.id, activeNode?.parentId, nodes])
 
-  const breadcrumbPath = getBreadcrumbPath()
   const messages = getDisplayMessages(activeNode)
   const chatScrollRef = useRef(null)
   const lastMessageRef = useRef(null)
@@ -158,7 +218,6 @@ const StudyPanel = ({
     if (!scrollEl) return
     const lastMsg = messages[messages.length - 1]
     if (lastMsg?.role === 'assistant') {
-      // Show start of response so user can read downward
       requestAnimationFrame(() => {
         lastMessageRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
       })
@@ -167,8 +226,8 @@ const StudyPanel = ({
     }
   }, [messages.length, isAILoading])
 
-  // Compute highlight overlay positions by measuring rendered DOM text
-  const computeOverlays = useCallback(() => {
+  // Compute highlight overlay positions (throttled)
+  const computeOverlaysImmediate = useCallback(() => {
     const container = contentRef.current
     const highlights = activeNode?.highlights
     if (!container || !highlights?.length) {
@@ -189,13 +248,20 @@ const StudyPanel = ({
     setHighlightOverlays(results)
   }, [activeNode?.id, activeNode?.highlights, nodes])
 
-  // Recompute overlays after content renders (short delay for ReactMarkdown)
+  const overlayRafRef = useRef(null)
+  const computeOverlays = useCallback(() => {
+    if (overlayRafRef.current !== null) return
+    overlayRafRef.current = requestAnimationFrame(() => {
+      computeOverlaysImmediate()
+      overlayRafRef.current = null
+    })
+  }, [computeOverlaysImmediate])
+
   useEffect(() => {
     const timer = setTimeout(computeOverlays, 120)
     return () => clearTimeout(timer)
   }, [computeOverlays, messages.length])
 
-  // Recompute overlays on resize (panel resize or window resize)
   useEffect(() => {
     const container = contentRef.current
     if (!container) return
@@ -216,7 +282,38 @@ const StudyPanel = ({
     return () => scrollEl.removeEventListener('scroll', handleScroll)
   }, [computeOverlays])
 
-  const ACCEPTED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'] // includes macOS screenshot (PNG)
+  // Panel rect for popup positioning
+  useEffect(() => {
+    const el = panelRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => {
+      setPanelRect(el.getBoundingClientRect())
+    })
+    ro.observe(el)
+    setPanelRect(el.getBoundingClientRect())
+    return () => ro.disconnect()
+  }, [])
+
+  useLayoutEffect(() => {
+    if (!effectiveSelection || !panelRect) {
+      setPopupPosition({ left: 0, top: 0 })
+      return
+    }
+    const r = effectiveSelection.rect
+    const selectionLeft = r.left - panelRect.left
+    const selectionTop = r.top - panelRect.top
+    const selectionWidth = r.width ?? 0
+    const popupWidth = 320
+    const gap = 12
+    const rightSpace = panelRect.width - (selectionLeft + selectionWidth + gap)
+    const left = rightSpace >= popupWidth
+      ? selectionLeft + selectionWidth + gap
+      : Math.max(12, selectionLeft - popupWidth - gap)
+    const top = Math.max(12, selectionTop)
+    setPopupPosition({ left, top })
+  }, [effectiveSelection?.text, effectiveSelection?.rect?.left, effectiveSelection?.rect?.top, effectiveSelection?.rect?.width, panelRect])
+
+  const ACCEPTED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp']
 
   const processImageFile = (file) => {
     if (!file || !ACCEPTED_IMAGE_TYPES.includes(file.type)) return
@@ -323,13 +420,16 @@ const StudyPanel = ({
   }, [isModelPickerOpen])
 
   const currentModel = AI_MODELS.find(m => m.id === selectedModel) || AI_MODELS[0]
-  const modelGroups = AI_MODELS.reduce((acc, m) => {
-    if (!acc[m.group]) acc[m.group] = []
-    acc[m.group].push(m)
-    return acc
-  }, {})
+  const modelGroups = useMemo(() =>
+    AI_MODELS.reduce((acc, m) => {
+      if (!acc[m.group]) acc[m.group] = []
+      acc[m.group].push(m)
+      return acc
+    }, {}),
+  [])
 
-  // First chat: no nodes yet — user starts by typing the topic
+  // ─── First chat: no nodes yet ────────────────────────────────────────────────
+
   if (!activeNode && hasNoNodesYet) {
     const handleFirstSubmit = (e) => {
       e.preventDefault()
@@ -352,7 +452,7 @@ const StudyPanel = ({
             </div>
             <h2 className="text-2xl font-semibold text-white mb-2">What do you want to learn?</h2>
             <p className="text-forest-light-gray mb-8">
-              Type a topic or question below. This will become your first node and we’ll build your knowledge tree from here.
+              Type a topic or question below. This will become your first node and we'll build your knowledge tree from here.
             </p>
           </motion.div>
         </div>
@@ -389,7 +489,8 @@ const StudyPanel = ({
     )
   }
 
-  // Empty state when tree exists but no node is selected
+  // ─── Empty state: tree exists but no node selected ───────────────────────────
+
   if (!activeNode) {
     return (
       <div className="h-full flex flex-col items-center justify-center text-center p-8">
@@ -414,31 +515,15 @@ const StudyPanel = ({
     )
   }
 
-  const panelRect = panelRef.current?.getBoundingClientRect()
-  const selectionLeft = panelRect && effectiveSelection
-    ? effectiveSelection.rect.left - panelRect.left
-    : 0
-  const selectionTop = panelRect && effectiveSelection
-    ? effectiveSelection.rect.top - panelRect.top
-    : 0
-  const selectionWidth = effectiveSelection?.rect?.width ?? 0
+  // ─── Active node view ────────────────────────────────────────────────────────
+
   const popupWidth = 320
-  const gap = 12
-  // Place popup beside the selection (right first, else left) so it doesn't cover the selection or cursor
-  const rightSpace = panelRect ? panelRect.width - (selectionLeft + selectionWidth + gap) : 0
-  const popupLeft = panelRect
-    ? rightSpace >= popupWidth
-      ? selectionLeft + selectionWidth + gap
-      : Math.max(12, selectionLeft - popupWidth - gap)
-    : selectionLeft
-  const popupTop = Math.max(12, selectionTop)
 
   return (
     <div ref={panelRef} className="h-full flex flex-col bg-forest-darker relative">
-      {/* Header with Breadcrumb (node title is the last segment) + Jump options to the right */}
+      {/* Header with Breadcrumb */}
       <div className="flex-shrink-0 border-b border-forest-border bg-forest-card/50">
         <div className="px-4 py-3 flex items-center gap-3">
-          {/* Close panel button - left so it doesn't overlap breadcrumb/branch buttons */}
           {onClose && (
             <button
               onClick={onClose}
@@ -448,7 +533,6 @@ const StudyPanel = ({
               <X size={18} className="text-forest-light-gray" />
             </button>
           )}
-          {/* Hierarchy (breadcrumb): scrolls when long */}
           <div className="flex-1 min-w-0 overflow-x-auto">
             <div className="flex items-center gap-1 ml-0.5 text-sm min-w-max">
               {breadcrumbPath.map((node, index) => (
@@ -501,7 +585,7 @@ const StudyPanel = ({
               ))}
             </div>
           </div>
-          {/* Right side: yellow next-node paths (close button is on the left) */}
+          {/* Right side: yellow next-node paths */}
           <div className="flex items-center gap-2 flex-shrink-0">
             {activeNode.highlights?.length > 0 && (
               <div className="flex items-center gap-2 flex-wrap justify-end">
@@ -533,7 +617,7 @@ const StudyPanel = ({
         )}
       </div>
 
-      {/* Content area: prose + faded user-question bubbles + thinking */}
+      {/* Content area */}
       <div className="flex-1 overflow-hidden flex flex-col relative">
         <div
           ref={chatScrollRef}
@@ -558,52 +642,15 @@ const StudyPanel = ({
             ) : (
               <>
                 {messages.map((msg, i) => (
-                  <motion.div
-                    key={i}
-                    ref={i === messages.length - 1 ? lastMessageRef : null}
-                    initial={{ opacity: 0, y: 8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.2 }}
-                    className={`${msg.role === 'user' ? 'mt-6 flex justify-end' : 'mb-6 pb-4 border-b border-forest-border/30'}`}
-                  >
-                    {msg.role === 'user' && (() => {
-                      const branch = parseBranchUserMessage(msg.content)
-                      const imageDataUrl = msg.image?.mimeType && msg.image?.data
-                        ? `data:${msg.image.mimeType};base64,${msg.image.data}`
-                        : null
-                      return (
-                        <div className="flex items-start gap-3 max-w-xl">
-                          {imageDataUrl && (
-                            <img
-                              src={imageDataUrl}
-                              alt="Attached"
-                              className="w-14 h-14 rounded-lg object-cover border border-forest-border/50 flex-shrink-0"
-                            />
-                          )}
-                          <div className="rounded-xl px-4 py-2.5 bg-forest-card/50 border border-forest-border/50 text-forest-light-gray/90 text-sm min-w-0">
-                            {branch ? (
-                              <>
-                                <p className="italic">&quot;{branch.selectedText}&quot;</p>
-                                <p className="mt-2">{branch.followUpQuestion}</p>
-                              </>
-                            ) : (
-                              msg.content
-                            )}
-                          </div>
-                        </div>
-                      )
-                    })()}
-                    {msg.role === 'assistant' && (
-                      <div className="prose prose-invert prose-sm max-w-none text-white pt-1">
-                        <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
-                          {msg.content}
-                        </ReactMarkdown>
-                      </div>
-                    )}
-                  </motion.div>
+                  <MemoizedMessage
+                    key={`${activeNode.id}-${i}`}
+                    msg={msg}
+                    isLast={i === messages.length - 1}
+                    lastMessageRef={lastMessageRef}
+                  />
                 ))}
 
-                {/* Thinking: only in the node that is loading, no outline */}
+                {/* Thinking indicator */}
                 <AnimatePresence>
                   {isAILoading && loadingNodeId === activeNode?.id && (
                     <motion.div
@@ -627,7 +674,7 @@ const StudyPanel = ({
             )}
           </div>
 
-          {/* Topic drift: offer to create new node for this concept */}
+          {/* Topic drift suggestion */}
           {activeNode?.suggestNewNode?.concept && messages.length > 0 && (
             <div className="px-4 py-3 border-t border-forest-border/50 bg-forest-card/30 flex flex-col gap-2">
               <p className="text-sm text-forest-light-gray">
@@ -660,7 +707,7 @@ const StudyPanel = ({
           )}
         </div>
 
-        {/* Ask Forest popup - only when branching is allowed (not first node / default "Node 1" title) */}
+        {/* Ask Forest popup */}
         <AnimatePresence>
           {effectiveSelection && canBranch && (
             <motion.div
@@ -669,8 +716,8 @@ const StudyPanel = ({
               exit={{ opacity: 0, scale: 0.95, y: 8 }}
               className="absolute z-50 pointer-events-auto bg-forest-card border border-forest-border rounded-xl shadow-2xl overflow-hidden select-none"
               style={{
-                left: popupLeft,
-                top: popupTop,
+                left: popupPosition.left,
+                top: popupPosition.top,
                 minWidth: 280,
                 maxWidth: 420,
               }}
@@ -891,6 +938,8 @@ const StudyPanel = ({
       )}
     </div>
   )
-}
+})
+
+StudyPanel.displayName = 'StudyPanel'
 
 export default StudyPanel

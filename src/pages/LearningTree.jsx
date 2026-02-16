@@ -24,7 +24,15 @@ const LearningTree = () => {
   const [panelWidth, setPanelWidth] = useState(420)
   const [branchFromName, setBranchFromName] = useState('')
   const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem('forest-ai-model') || DEFAULT_MODEL)
-  const isResizingRef = useRef(false)
+
+  // Refs for stable callbacks (avoid stale closures without adding deps)
+  const nodesRef = useRef(nodes)
+  nodesRef.current = nodes
+  const edgesRef = useRef(edges)
+  edgesRef.current = edges
+
+  // Ref for direct DOM manipulation during resize (avoids React re-renders)
+  const panelContainerRef = useRef(null)
 
   const handleModelChange = useCallback((modelId) => {
     setSelectedModel(modelId)
@@ -34,6 +42,8 @@ const LearningTree = () => {
   const MIN_PANEL_WIDTH = 320
   const MAX_PANEL_WIDTH = () => Math.max(MIN_PANEL_WIDTH, window.innerWidth * 0.75)
 
+  // ─── Panel Resize: direct DOM manipulation, no React re-renders during drag ──
+
   const handleResizeStart = useCallback((e) => {
     e.preventDefault()
     const handle = e.currentTarget
@@ -41,28 +51,44 @@ const LearningTree = () => {
     handle.setPointerCapture(pointerId)
 
     const maxW = MAX_PANEL_WIDTH()
+    const el = panelContainerRef.current
+
+    // Disable CSS transition during resize (it fights with JS-driven width)
+    if (el) el.style.transition = 'none'
 
     const onMove = (ev) => {
       if (ev.pointerId !== pointerId) return
       const x = Math.max(0, Math.min(window.innerWidth, ev.clientX))
       const w = window.innerWidth - x
-      setPanelWidth(Math.min(maxW, Math.max(MIN_PANEL_WIDTH, w)))
+      const clamped = Math.min(maxW, Math.max(MIN_PANEL_WIDTH, w))
+      // Direct DOM update — no React re-render!
+      if (el) {
+        el.style.width = `${clamped}px`
+        el.style.minWidth = `${MIN_PANEL_WIDTH}px`
+      }
     }
 
     const cleanup = () => {
+      // Commit final width to React state (single re-render)
+      if (el) {
+        const finalWidth = el.getBoundingClientRect().width
+        setPanelWidth(finalWidth)
+        // Clear inline styles so React controls again
+        el.style.width = ''
+        el.style.minWidth = ''
+        el.style.transition = ''
+      }
       try { handle.releasePointerCapture(pointerId) } catch (_) {}
       handle.removeEventListener('pointermove', onMove)
       handle.removeEventListener('pointerup', cleanup)
       handle.removeEventListener('pointercancel', cleanup)
       document.removeEventListener('visibilitychange', onVisibilityChange)
-      isResizingRef.current = false
     }
 
     const onVisibilityChange = () => {
       if (document.visibilityState === 'hidden') cleanup()
     }
 
-    isResizingRef.current = true
     handle.addEventListener('pointermove', onMove)
     handle.addEventListener('pointerup', cleanup)
     handle.addEventListener('pointercancel', cleanup)
@@ -112,7 +138,6 @@ const LearningTree = () => {
   const initialLoadDone = useRef(false)
 
   useEffect(() => {
-    // Don't save on the very first render (before data is loaded)
     if (isTreeLoading) return
     if (!initialLoadDone.current) {
       initialLoadDone.current = true
@@ -172,9 +197,9 @@ const LearningTree = () => {
     setTimeout(() => canvasRef.current?.centerOnNode(newNode.id), 0)
   }
 
-  // Create a child node (branch) from the selected node; optional name, default "Node N"
+  // Create a child node (branch) from the selected node
   const handleCreateBranchFromNode = (parentNodeId, childLabel) => {
-    const parent = nodes.find(n => n.id === parentNodeId)
+    const parent = nodesRef.current.find(n => n.id === parentNodeId)
     if (!parent?.position) return
     const name = (childLabel || '').trim() || getNextNodeName()
     const childId = generateId()
@@ -198,7 +223,7 @@ const LearningTree = () => {
     setNodes(prev => [...prev, newNode])
     setEdges(prev => [...prev, newEdge])
     setActiveNodeId(childId)
-    setActivePath(getActivePath(childId, [...nodes, newNode], [...edges, newEdge]))
+    setActivePath(getActivePath(childId, [...nodesRef.current, newNode], [...edgesRef.current, newEdge]))
     setIsPanelOpen(true)
     setBranchFromName('')
     setTimeout(() => canvasRef.current?.centerOnNode(childId), 0)
@@ -221,7 +246,7 @@ const LearningTree = () => {
     setEdges(prev => prev.filter(e => e.sourceId !== nodeId && e.targetId !== nodeId))
     setActiveNodeId(null)
     setActivePath([])
-  }, [setNodes, setEdges])
+  }, [])
 
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -246,10 +271,9 @@ const LearningTree = () => {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [activeNodeId, deleteNodeById])
 
-  // Ask AI a question for a specific node (chat: append user msg, then assistant)
-  // imageForLastUserMessage: { mimeType, data } (base64) to send with the last user message
+  // Ask AI a question for a specific node
   const handleAskQuestion = async (nodeId, question, imageForLastUserMessage = null) => {
-    const node = nodes.find(n => n.id === nodeId)
+    const node = nodesRef.current.find(n => n.id === nodeId)
     if (!node) return
 
     const userMsg = {
@@ -266,7 +290,7 @@ const LearningTree = () => {
     setLoadingNodeId(nodeId)
 
     try {
-      const contextPath = buildContextPath(nodeId, nodes)
+      const contextPath = buildContextPath(nodeId, nodesRef.current)
       const heritage = getHeritageString(contextPath)
       const { response } = await askAI(heritage, newMessages, imageForLastUserMessage, selectedModel)
       const { content, concept, suggestNewNode } = parseModelResponse(response)
@@ -277,7 +301,6 @@ const LearningTree = () => {
         const next = { ...n, messages: [...(n.messages || []), { role: 'assistant', content }] }
 
         if (isDefaultLabel) {
-          // Default node name (e.g. "Node 1") — rename to the topic instead of suggesting a new node
           const newLabel = concept || suggestNewNode
           if (newLabel) next.label = newLabel
         } else {
@@ -306,7 +329,7 @@ const LearningTree = () => {
     const userQuestion = (userQuestionRaw || '').trim()
     if (!selectedText || !userQuestion) return
 
-    const parent = nodes.find(n => n.id === parentNodeId)
+    const parent = nodesRef.current.find(n => n.id === parentNodeId)
     if (!parent?.position) return
 
     const hasContent = (parent.messages?.some(m => m.role === 'assistant')) || !!parent.aiResponse
@@ -353,15 +376,15 @@ const LearningTree = () => {
 
       updatedParent.highlights[updatedParent.highlights.length - 1].childId = childId
 
-      const newNodes = [...nodes.filter(n => n.id !== parentNodeId), updatedParent, newNode]
-      const newEdges = [...edges, newEdge]
+      const newNodes = [...nodesRef.current.filter(n => n.id !== parentNodeId), updatedParent, newNode]
+      const newEdges = [...edgesRef.current, newEdge]
 
       setNodes(newNodes)
       setEdges(newEdges)
       setActiveNodeId(childId)
       setActivePath(getActivePath(childId, newNodes, newEdges))
 
-      const contextPath = buildContextPath(parentNodeId, nodes)
+      const contextPath = buildContextPath(parentNodeId, nodesRef.current)
       const heritage = getHeritageString(contextPath)
       const branchMessages = [{ role: 'user', content: combinedQuestion }]
       const { response, error } = await askAI(heritage, branchMessages, null, selectedModel)
@@ -422,31 +445,31 @@ const LearningTree = () => {
   }
 
   // Close the study panel
-  const handleClosePanel = () => {
+  const handleClosePanel = useCallback(() => {
     setActiveNodeId(null)
     setActivePath([])
-  }
+  }, [])
 
-  // Double-click node: open side panel and select that node
-  const handleDoubleClickNode = (nodeId) => {
+  // Double-click node: open side panel and select that node (stable via refs)
+  const handleDoubleClickNode = useCallback((nodeId) => {
     setActiveNodeId(nodeId)
-    const pathEdgeIds = getActivePath(nodeId, nodes, edges)
+    const pathEdgeIds = getActivePath(nodeId, nodesRef.current, edgesRef.current)
     setActivePath(pathEdgeIds)
     setIsPanelOpen(true)
-  }
+  }, [])
 
-  // Navigate to a branch node (e.g. from clicking highlighted text in parent)
-  const handleNavigateToNode = (nodeId) => {
+  // Navigate to a branch node (stable via refs)
+  const handleNavigateToNode = useCallback((nodeId) => {
     setActiveNodeId(nodeId)
-    const pathEdgeIds = getActivePath(nodeId, nodes, edges)
+    const pathEdgeIds = getActivePath(nodeId, nodesRef.current, edgesRef.current)
     setActivePath(pathEdgeIds)
     setIsPanelOpen(true)
     canvasRef.current?.centerOnNode(nodeId)
-  }
+  }, [])
 
-  // User accepted "create new node" for topic drift: create separate node with question only, then send question and receive response on the new node
+  // User accepted "create new node" for topic drift
   const handleAcceptNewNode = async (currentNodeId) => {
-    const node = nodes.find(n => n.id === currentNodeId)
+    const node = nodesRef.current.find(n => n.id === currentNodeId)
     if (!node?.suggestNewNode?.concept || !node.messages?.length) return
 
     const msgs = [...node.messages]
@@ -529,22 +552,22 @@ const LearningTree = () => {
   }
 
   // Dismiss "create new node" suggestion
-  const handleDismissNewNodeSuggestion = (nodeId) => {
+  const handleDismissNewNodeSuggestion = useCallback((nodeId) => {
     setNodes(prev => prev.map(n => {
       if (n.id !== nodeId) return n
       const { suggestNewNode, ...rest } = n
       return rest
     }))
-  }
+  }, [])
 
   // Rename current node
-  const handleRenameNode = (nodeId, newLabel) => {
+  const handleRenameNode = useCallback((nodeId, newLabel) => {
     const trimmed = (newLabel || '').trim()
     if (!trimmed) return
     setNodes(prev => prev.map(n => (n.id === nodeId ? { ...n, label: trimmed } : n)))
-  }
+  }, [])
 
-  // Create first node from the initial chat message (topic = first message)
+  // Create first node from the initial chat message
   const handleCreateFirstNode = async (question) => {
     const trimmed = (question || '').trim()
     if (!trimmed) return
@@ -628,7 +651,7 @@ const LearningTree = () => {
         </div>
       )}
 
-      {/* Top: Dashboard button + controls (pointer-events-none on bar so panel breadcrumb/branch buttons stay clickable) */}
+      {/* Top: Dashboard button + controls */}
       <div className="absolute top-0 left-0 z-50 h-14 flex items-center gap-3 px-4 pointer-events-none">
         <Link to="/dashboard" className="pointer-events-auto">
           <motion.button
@@ -698,12 +721,12 @@ const LearningTree = () => {
         )}
       </div>
 
-      {/* Main Content: chat-only when no nodes, split view once tree exists (full height; dashboard overlays) */}
+      {/* Main Content */}
       <div className="h-full flex">
-        {/* Canvas Section - hidden until first node exists */}
+        {/* Canvas Section */}
         {!hasNoNodes && (
           <div
-            className="h-full flex-1 min-w-0 transition-[flex] duration-200"
+            className="h-full flex-1 min-w-0"
             style={isPanelOpen ? {} : { flex: 1 }}
           >
             <TreeCanvas
@@ -721,7 +744,7 @@ const LearningTree = () => {
           </div>
         )}
 
-        {/* Resize handle - only when tree exists and panel open */}
+        {/* Resize handle */}
         {!hasNoNodes && isPanelOpen && (
           <div
             role="separator"
@@ -733,11 +756,37 @@ const LearningTree = () => {
           </div>
         )}
 
-        {/* Study Panel: full width when no nodes, otherwise side panel */}
-        {(isPanelOpen || hasNoNodes) && (
+        {/* Study Panel */}
+        {hasNoNodes ? (
+          <div className="h-full flex-1 min-w-0 border-l border-forest-border bg-forest-darker">
+            <StudyPanel
+              activeNode={activeNode}
+              nodes={nodes}
+              hasNoNodesYet={hasNoNodes}
+              onCreateFirstNode={handleCreateFirstNode}
+              onAskQuestion={handleAskQuestion}
+              onAskBranchFromSelection={handleAskBranchFromSelection}
+              onNavigateToNode={handleNavigateToNode}
+              onRenameNode={handleRenameNode}
+              onAcceptNewNode={handleAcceptNewNode}
+              onDismissNewNodeSuggestion={handleDismissNewNodeSuggestion}
+              isAILoading={isAILoading}
+              loadingNodeId={loadingNodeId}
+              onClose={undefined}
+              activePath={activePath}
+              selectedModel={selectedModel}
+              onModelChange={handleModelChange}
+            />
+          </div>
+        ) : (
           <div
-            className="h-full flex-shrink-0 border-l border-forest-border bg-forest-darker"
-            style={hasNoNodes ? { flex: 1, minWidth: 0 } : { width: panelWidth, minWidth: MIN_PANEL_WIDTH }}
+            ref={panelContainerRef}
+            className="h-full flex-shrink-0 border-l border-forest-border bg-forest-darker transition-[width] duration-200 ease-out overflow-hidden"
+            style={{
+              width: isPanelOpen ? panelWidth : 0,
+              minWidth: isPanelOpen ? MIN_PANEL_WIDTH : 0,
+            }}
+            aria-hidden={!isPanelOpen}
           >
             <StudyPanel
               activeNode={activeNode}
@@ -752,7 +801,7 @@ const LearningTree = () => {
               onDismissNewNodeSuggestion={handleDismissNewNodeSuggestion}
               isAILoading={isAILoading}
               loadingNodeId={loadingNodeId}
-              onClose={hasNoNodes ? undefined : handleClosePanel}
+              onClose={handleClosePanel}
               activePath={activePath}
               selectedModel={selectedModel}
               onModelChange={handleModelChange}
@@ -763,5 +812,6 @@ const LearningTree = () => {
     </div>
   )
 }
+
 
 export default LearningTree
