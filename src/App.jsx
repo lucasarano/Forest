@@ -7,6 +7,7 @@ import Signup from './pages/Signup'
 import Dashboard from './pages/Dashboard'
 import LearningTree from './pages/LearningTree'
 import ProtectedRoute from './components/ProtectedRoute'
+import MockRoutes from './mockup/MockRoutes'
 
 function App() {
   return (
@@ -32,6 +33,7 @@ function App() {
               </ProtectedRoute>
             }
           />
+          <Route path="/mockup/*" element={<MockRoutes />} />
         </Routes>
       </Router>
     </AuthProvider>
