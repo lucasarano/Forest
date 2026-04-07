@@ -24,6 +24,7 @@ export const AI_MODELS = [
 ]
 
 export const DEFAULT_MODEL = 'gemini-2.5-pro'
+export const MVP_AIRPLANE_MODEL = 'gpt-4.1-mini'
 
 // ─── System Prompt ────────────────────────────────────────────────────────────
 
@@ -241,6 +242,46 @@ const callOpenAI = async (modelId, heritage, messages, imageForLastUserMessage) 
   return content
 }
 
+const callOpenAIChatWithSystemPrompt = async (modelId, systemPrompt, messages, options = {}) => {
+  const apiKey = import.meta.env.VITE_OPENAI_API_KEY
+  if (!apiKey) throw new Error('OpenAI API key not configured. Add VITE_OPENAI_API_KEY to your .env file.')
+
+  const openaiMessages = [
+    { role: 'system', content: systemPrompt },
+    ...messages.map((msg) => ({
+      role: msg.role === 'assistant' ? 'assistant' : 'user',
+      content: msg.content || '',
+    })),
+  ]
+
+  const response = await fetch(`${OPENAI_API_BASE}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: modelId,
+      messages: openaiMessages,
+      temperature: typeof options.temperature === 'number' ? options.temperature : 0.7,
+      max_completion_tokens: options.maxCompletionTokens || 2048,
+      ...(options.responseFormat ? { response_format: options.responseFormat } : {}),
+    }),
+  })
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.error?.message || `OpenAI API request failed (${response.status})`)
+  }
+
+  const data = await response.json()
+  const content = data.choices?.[0]?.message?.content?.trim() || ''
+  if (!content && data.choices?.[0]?.finish_reason) {
+    throw new Error(`Generation stopped: ${data.choices[0].finish_reason}`)
+  }
+  return content
+}
+
 // ─── Unified Public API ───────────────────────────────────────────────────────
 
 /**
@@ -273,6 +314,194 @@ export const askAI = async (heritage, messages, imageForLastUserMessage = null, 
     console.error('AI API Error:', error)
     return {
       response: `Error: ${error.message}. Please check your API key and connection.`,
+      error: error.message,
+    }
+  }
+}
+
+const MVP_AIRPLANE_SYSTEM_PROMPT = `You are a free-form tutor helping a student learn how an airplane jet engine works.
+
+Rules:
+1. Answer in a conversational ChatGPT-style format.
+2. Focus on intake, compression, combustion, turbine, exhaust, thrust, airflow, and how engine stages connect.
+3. Assume the learner is intelligent but new to this topic.
+4. Prefer clear explanations, concrete analogies, and short structured sections.
+5. Do not mention knowledge graphs, concept nodes, or mastery labels.
+6. Keep the conversation centered on airplane engines unless the student explicitly asks for a comparison.`
+
+export const askMVPTutor = async (messages, modelId = MVP_AIRPLANE_MODEL) => {
+  try {
+    const response = await callOpenAIChatWithSystemPrompt(modelId, MVP_AIRPLANE_SYSTEM_PROMPT, messages)
+    return { response, error: null }
+  } catch (error) {
+    console.error('MVP tutor error:', error)
+    return {
+      response: `Error: ${error.message}. Please check your API key and connection.`,
+      error: error.message,
+    }
+  }
+}
+
+const stripCodeFence = (value) => value
+  .trim()
+  .replace(/^```json\s*/i, '')
+  .replace(/^```\s*/i, '')
+  .replace(/\s*```$/, '')
+
+const parseDiagnosticJson = (value) => {
+  const cleaned = stripCodeFence(value)
+  try {
+    return JSON.parse(cleaned)
+  } catch (error) {
+    const firstBrace = cleaned.indexOf('{')
+    const lastBrace = cleaned.lastIndexOf('}')
+    if (firstBrace >= 0 && lastBrace > firstBrace) {
+      return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1))
+    }
+    throw error
+  }
+}
+
+const latestUserMessageLooksLowEffort = (messages) => {
+  const latestUserMessage = [...(messages || [])].reverse().find((message) => message?.role === 'user')
+  const content = (latestUserMessage?.content || '').trim().toLowerCase()
+  if (!content) return true
+
+  return /^(idk|i do not know|i don't know|dont know|don't know|not sure|no idea|i have no idea|unsure|i am unsure|i'm unsure|idk honestly|idk really|not really sure|i guess|maybe)[.!?\s]*$/.test(content)
+}
+
+const buildLowEffortTeachingResponse = (nodeConfig, parsed) => ({
+  mastered: false,
+  feedback: typeof nodeConfig?.lowEffortTeaching === 'string' && nodeConfig.lowEffortTeaching
+    ? nodeConfig.lowEffortTeaching
+    : typeof parsed?.feedback === 'string' && parsed.feedback
+      ? parsed.feedback
+      : 'Here is the key idea for this node. Read it carefully, then restate it in your own words.',
+  hint: typeof nodeConfig?.lowEffortHint === 'string' && nodeConfig.lowEffortHint
+    ? nodeConfig.lowEffortHint
+    : typeof parsed?.hint === 'string'
+      ? parsed.hint
+      : 'Use one concrete mechanism or one specific example in your next reply.',
+  example: typeof nodeConfig?.lowEffortExample === 'string' && nodeConfig.lowEffortExample
+    ? nodeConfig.lowEffortExample
+    : typeof parsed?.example === 'string'
+      ? parsed.example
+      : '',
+  missingConcepts: Array.isArray(parsed?.missingConcepts)
+    ? parsed.missingConcepts.filter((item) => typeof item === 'string')
+    : [],
+  nextPrompt: typeof nodeConfig?.lowEffortPrompt === 'string' && nodeConfig.lowEffortPrompt
+    ? nodeConfig.lowEffortPrompt
+    : typeof parsed?.nextPrompt === 'string'
+      ? parsed.nextPrompt
+      : nodeConfig?.question || 'Try explaining the idea again in your own words.',
+  pointsToAdd: 0,
+})
+
+export const askMVPDiagnosticTutor = async (nodeConfig, messages, modelId = MVP_AIRPLANE_MODEL) => {
+  const masteryGoals = Array.isArray(nodeConfig?.masteryGoals) ? nodeConfig.masteryGoals : []
+  const currentScore = Number.isFinite(nodeConfig?.currentMasteryScore) ? nodeConfig.currentMasteryScore : 0
+  const systemPrompt = `You are Forest's guided diagnostic tutor for one specific learning node.
+
+Internal node context for you only:
+- Title: ${nodeConfig?.title || 'Unknown concept'}
+- Summary: ${nodeConfig?.summary || ''}
+- Question: ${nodeConfig?.question || ''}
+- Current mastery score: ${currentScore} / 100
+
+Mastery goals:
+${masteryGoals.map((goal, index) => `${index + 1}. ${goal}`).join('\n')}
+
+Your job:
+1. Read the full mini-chat for this node.
+2. Evaluate the student's latest message for conceptual understanding.
+3. Reply as a tutor, not as a grader only.
+4. Never begin by dumping the hidden node explanation or by restating the full target answer.
+5. If the student is incorrect or incomplete, correct the misunderstanding, provide a brief example, and guide them toward the right thought process without simply handing over a polished final answer.
+6. If the student is partially correct, acknowledge what is right, explain what is missing, and advance them somewhat.
+7. Reveal only the next useful conceptual step. Prefer a probing follow-up over a complete exposition.
+8. Keep the student doing the cognitive work. Your response should sound like a tutor nudging, not a textbook giving away the solution.
+9. Add mastery points based on how much closer the student got to a correct mental model.
+10. Only mark the node as mastered when the cumulative mastery score should reach 100.
+
+Return strict JSON only with this shape:
+{
+  "mastered": boolean,
+  "feedback": "short markdown response to show in chat",
+  "hint": "one concrete hint that helps the student move forward",
+  "example": "one short example or analogy",
+  "missingConcepts": ["concept 1", "concept 2"],
+  "nextPrompt": "one follow-up prompt that pushes the student forward",
+  "pointsToAdd": 0
+}
+
+Rules:
+- "mastered" should be true only if the student has covered the main ideas well enough for this node and the node should now be considered 100/100.
+- "pointsToAdd" must be an integer from 0 to 100.
+- Use small increments for weak answers, moderate increments for partially correct answers, and enough points to reach 100 only when the student is genuinely there.
+- Award points only for new, student-supplied conceptual content in the latest message.
+- If the latest message is vague, disengaged, or does not add substantive new reasoning, set "pointsToAdd" to 0 and "mastered" to false.
+- "feedback" should teach, not just evaluate.
+- In most non-mastered turns, include both a "hint" and an "example".
+- Use "feedback" to explain what is right or wrong, "hint" to give the next nudge, and "example" to make the idea more concrete.
+- When the answer is wrong, explicitly correct the misconception, include one concrete example, and explain the direction they should think in next.
+- Prefer one short example and one pointed follow-up over a broad explanation dump.
+- If the student's latest message is tentative, hedged, or phrased as a question such as "maybe...", "could it be...?", or "is it...?", treat it as a real attempt. Respond to the substance of the idea directly instead of telling them to restate.
+- When the student asks a clarifying question, answer that question briefly and then steer them back toward the node goal.
+- Do not output a complete final answer for the student to copy verbatim unless mastery is already effectively reached.
+- Do not reveal the whole hidden lesson in one turn just because you know the node goals.
+- Keep "missingConcepts" empty when mastered is true.
+- Do not wrap the JSON in markdown fences.
+- Do not include any text outside the JSON.`
+
+  try {
+    const raw = await callOpenAIChatWithSystemPrompt(modelId, systemPrompt, messages, {
+      temperature: 0.2,
+      responseFormat: { type: 'json_object' },
+    })
+    const parsed = parseDiagnosticJson(raw)
+    const lowEffortReply = latestUserMessageLooksLowEffort(messages)
+    const normalizedPoints = Number.isFinite(parsed.pointsToAdd)
+      ? Math.max(0, Math.min(100, Math.round(parsed.pointsToAdd)))
+      : 0
+
+    if (lowEffortReply) {
+      return {
+        response: buildLowEffortTeachingResponse(nodeConfig, parsed),
+        error: null,
+      }
+    }
+
+    return {
+      response: {
+        mastered: !!parsed.mastered,
+        feedback: typeof parsed.feedback === 'string'
+          ? parsed.feedback
+          : 'Keep going.',
+        hint: typeof parsed.hint === 'string'
+          ? parsed.hint
+          : '',
+        example: typeof parsed.example === 'string'
+          ? parsed.example
+          : '',
+        missingConcepts: Array.isArray(parsed.missingConcepts)
+          ? parsed.missingConcepts.filter((item) => typeof item === 'string')
+          : [],
+        nextPrompt: typeof parsed.nextPrompt === 'string' ? parsed.nextPrompt : '',
+        pointsToAdd: normalizedPoints,
+      },
+      error: null,
+    }
+  } catch (error) {
+    console.error('MVP diagnostic tutor error:', error)
+    return {
+      response: {
+        mastered: false,
+        feedback: 'I could not evaluate that answer cleanly. Try restating the idea more directly.',
+        missingConcepts: [],
+        nextPrompt: nodeConfig?.question || 'Try answering the node question again.',
+        pointsToAdd: 0,
+      },
       error: error.message,
     }
   }

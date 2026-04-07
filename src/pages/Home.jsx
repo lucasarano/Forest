@@ -150,6 +150,9 @@ const Home = () => {
           <div className="flex items-center justify-between">
             <Logo size="md" clickable />
             <div className="flex items-center gap-4">
+              <Link to="/MVP">
+                <Button variant="secondary">Sprint MVP</Button>
+              </Link>
               <Link to="/login">
                 <Button variant="ghost">Sign In</Button>
               </Link>
@@ -181,6 +184,11 @@ const Home = () => {
               a personalized learning experience that adapts to you.
             </p>
             <div className="flex items-center justify-center gap-4">
+              <Link to="/MVP">
+                <Button variant="secondary" className="text-lg px-8 py-4">
+                  Launch Sprint MVP
+                </Button>
+              </Link>
               <Link to="/signup">
                 <Button variant="primary" className="text-lg px-8 py-4">
                   <span className="flex items-center gap-2">

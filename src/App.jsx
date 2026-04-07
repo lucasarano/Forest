@@ -6,8 +6,11 @@ import Login from './pages/Login'
 import Signup from './pages/Signup'
 import Dashboard from './pages/Dashboard'
 import LearningTree from './pages/LearningTree'
+import MVP from './pages/MVP'
+import MVPAdmin from './pages/MVPAdmin'
+import MVPV2 from './pages/MVPV2'
+import MVPV2Admin from './pages/MVPV2Admin'
 import ProtectedRoute from './components/ProtectedRoute'
-import MockRoutes from './mockup/MockRoutes'
 
 function App() {
   return (
@@ -15,6 +18,11 @@ function App() {
       <Router>
         <Routes>
           <Route path="/" element={<Home />} />
+          <Route path="/MVP" element={<MVP />} />
+          <Route path="/mvp" element={<MVP />} />
+          <Route path="/mvp-admin" element={<MVPAdmin />} />
+          <Route path="/mvp-v2" element={<MVPV2 />} />
+          <Route path="/mvp-v2-admin" element={<MVPV2Admin />} />
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
           <Route
@@ -33,7 +41,6 @@ function App() {
               </ProtectedRoute>
             }
           />
-          <Route path="/mockup/*" element={<MockRoutes />} />
         </Routes>
       </Router>
     </AuthProvider>

@@ -17,6 +17,7 @@ const TreeCanvas = forwardRef(({
   activePath,
   setActivePath,
   onDoubleClickNode,
+  isReadOnly = false,
 }, ref) => {
   const canvasRef = useRef(null)
   const [camera, setCamera] = useState({ x: 0, y: 0, scale: 1 })
@@ -125,6 +126,7 @@ const TreeCanvas = forwardRef(({
 
   // Create root node on double click (only on canvas, not on nodes)
   const handleDoubleClick = useCallback((e) => {
+    if (isReadOnly) return
     if (e.target.closest('.tree-node')) return
 
     const rect = canvasRef.current.getBoundingClientRect()
@@ -142,12 +144,14 @@ const TreeCanvas = forwardRef(({
       contextAnchor: '',
       highlights: [],
       messages: [],
+      memories: [],
+      memoryOverrides: {},
     }
 
     setNodes(prev => [...prev, newNode])
     setActiveNodeId(newNode.id)
     setActivePath([])
-  }, [setNodes, setActiveNodeId, setActivePath])
+  }, [isReadOnly, setNodes, setActiveNodeId, setActivePath])
 
   // ─── Panning with RAF batching ───────────────────────────────────────────────
 
@@ -239,16 +243,18 @@ const TreeCanvas = forwardRef(({
   // ─── Stable node callbacks (never change → React.memo on TreeNode works) ────
 
   const handleNodeDrag = useCallback((nodeId, newPosition) => {
+    if (isReadOnly) return
     setNodes(prev => prev.map(n =>
       n.id === nodeId ? { ...n, position: newPosition } : n
     ))
-  }, [setNodes])
+  }, [isReadOnly, setNodes])
 
   const handleLabelChange = useCallback((nodeId, newLabel) => {
+    if (isReadOnly) return
     setNodes(prev => prev.map(n =>
       n.id === nodeId ? { ...n, label: newLabel } : n
     ))
-  }, [setNodes])
+  }, [isReadOnly, setNodes])
 
   const handleNodeClick = useCallback((nodeId) => {
     if (activeNodeIdRef.current === nodeId) {
@@ -329,6 +335,7 @@ const TreeCanvas = forwardRef(({
             isSelected={activeNodeId === node.id}
             scale={camera.scale}
             onDoubleClickNode={onDoubleClickNode}
+            isReadOnly={isReadOnly}
           />
         ))}
       </div>

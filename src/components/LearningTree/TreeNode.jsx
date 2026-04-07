@@ -9,6 +9,7 @@ const TreeNode = React.memo(({
   scale,
   onLabelChange,
   onDoubleClickNode,
+  isReadOnly = false,
 }) => {
   const isDraggingRef = useRef(false)
   const dragStartRef = useRef({ x: 0, y: 0 })
@@ -33,6 +34,7 @@ const TreeNode = React.memo(({
   }, [node.label])
 
   const handleMouseDown = useCallback((e) => {
+    if (isReadOnly) return
     e.stopPropagation()
     isDraggingRef.current = true
     const s = scaleRef.current
@@ -71,7 +73,7 @@ const TreeNode = React.memo(({
 
     window.addEventListener('mousemove', onMouseMove)
     window.addEventListener('mouseup', onMouseUp)
-  }, [node.position.x, node.position.y])
+  }, [isReadOnly, node.position.x, node.position.y])
 
   const handleDoubleClick = useCallback((e) => {
     e.stopPropagation()

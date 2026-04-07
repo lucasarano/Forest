@@ -19,6 +19,8 @@ export const buildContextPath = (nodeId, nodesArray) => {
       contextAnchor: currentNode.contextAnchor,
       aiResponse: currentNode.aiResponse,
       messages: currentNode.messages,
+      memories: currentNode.memories,
+      memoryOverrides: currentNode.memoryOverrides,
     })
     currentNode = nodesArray.find(n => n.id === currentNode.parentId)
   }
@@ -26,25 +28,55 @@ export const buildContextPath = (nodeId, nodesArray) => {
   return path
 }
 
+/** Build raw node path from root to active node. */
+export const buildNodePath = (nodeId, nodesArray) => {
+  const path = []
+  let currentNode = nodesArray.find((n) => n.id === nodeId)
+  while (currentNode) {
+    path.unshift(currentNode)
+    currentNode = nodesArray.find((n) => n.id === currentNode.parentId)
+  }
+  return path
+}
+
 /**
  * Get heritage string (path context) for AI - no current question
  */
 export const getHeritageString = (contextPath) => {
+  if (!Array.isArray(contextPath) || contextPath.length === 0) {
+    return 'Contextual Heritage:\nNone\n'
+  }
+
   let heritage = "Contextual Heritage:\n"
   contextPath.forEach((node, i) => {
-    const firstQ = node.question || node.messages?.[0]?.content
     if (i === 0) {
       heritage += `Root Topic: "${node.label}"`
-      if (firstQ) heritage += ` (Original question: "${firstQ}")`
       heritage += '\n'
     } else {
       heritage += `  ↳ Level ${i}: "${node.label}"`
       if (node.contextAnchor) heritage += ` (branched from: "${node.contextAnchor}")`
-      if (firstQ) heritage += ` - Asked: "${firstQ}"`
       heritage += '\n'
     }
   })
   return heritage
+}
+
+/** Append effective persistent memories to the heritage string. */
+export const composeHeritageWithMemories = (heritage, effectiveMemories) => {
+  const enabled = (effectiveMemories || []).filter((entry) => entry?.effectiveEnabled)
+  if (enabled.length === 0) return heritage
+
+  let next = heritage.trimEnd()
+  next += '\n\nPersistent Branch Memory:\n'
+  enabled.forEach((entry, index) => {
+    const title = entry.memory?.title || 'Untitled memory'
+    const reason = entry.memory?.reason || 'No reason provided'
+    const content = entry.memory?.content || ''
+    next += `${index + 1}. ${title} (from "${entry.sourceNodeLabel}")\n`
+    next += `   Why important: ${reason}\n`
+    if (content) next += `   Content: ${content}\n`
+  })
+  return next
 }
 
 /**

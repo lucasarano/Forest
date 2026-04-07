@@ -158,16 +158,16 @@ body {
   border-color: #e5e7eb !important;
 }
 
-/* Highlight overlay layer (top-most), boxes sit on top of everything */
-.highlight-overlay-layer {
-  position: fixed;
+/* Highlight overlay rendered inside chat content so it scrolls with text */
+.highlight-inline-layer {
+  position: absolute;
   inset: 0;
-  z-index: 9999;
+  z-index: 20;
   pointer-events: none;
 }
 
-/* Highlight overlay: bright yellow box over branched text */
-.highlight-overlay-box {
+.highlight-inline-box {
+  position: absolute;
   background: rgba(255, 221, 80, 0.45);
   border: 2px solid rgba(245, 200, 40, 0.8);
   border-radius: 8px;
@@ -180,7 +180,7 @@ body {
   box-shadow: 0 0 10px 2px rgba(245, 210, 60, 0.45);
 }
 
-.highlight-overlay-box:hover {
+.highlight-inline-box:hover {
   background: rgba(255, 231, 120, 0.6);
   box-shadow: 0 0 14px 3px rgba(245, 210, 60, 0.6);
   transform: translate(-3px, -2px) scale(1.02);
@@ -252,4 +252,56 @@ body {
 }
 .node-circle:active {
   transform: scale(0.95);
+}
+
+/* ─── Sprint 4 concept map node status animations ─── */
+
+/* Active node: emerald pulse (reuses existing node-pulse keyframes) */
+.s4-node-active-ring {
+  animation: node-pulse 2s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+/* Partial understanding: amber breathing glow */
+@keyframes s4-partial-glow {
+  0%, 100% { box-shadow: 0 0 8px 2px rgba(245, 158, 11, 0.25); }
+  50% { box-shadow: 0 0 16px 4px rgba(245, 158, 11, 0.45); }
+}
+.s4-node-partial {
+  animation: s4-partial-glow 2.5s ease-in-out infinite;
+}
+
+/* Mastered independently: emerald glow + content ring */
+@keyframes s4-mastered-glow {
+  0%, 100% { box-shadow: 0 0 10px 3px rgba(52, 211, 153, 0.3); }
+  50% { box-shadow: 0 0 20px 6px rgba(52, 211, 153, 0.5); }
+}
+.s4-node-mastered-ind {
+  animation: s4-mastered-glow 3s ease-in-out infinite;
+}
+
+/* Mastered with support: cyan glow */
+@keyframes s4-mastered-support-glow {
+  0%, 100% { box-shadow: 0 0 8px 2px rgba(34, 211, 238, 0.25); }
+  50% { box-shadow: 0 0 16px 4px rgba(34, 211, 238, 0.45); }
+}
+.s4-node-mastered-sup {
+  animation: s4-mastered-support-glow 3s ease-in-out infinite;
+}
+
+/* Sprint 4 concept map edge */
+.s4-edge {
+  transition: stroke 200ms, opacity 200ms;
+}
+.s4-edge-active {
+  animation: edge-main 2s ease-in-out infinite;
+}
+
+/* Sprint 4 map node base transition */
+.s4-map-node {
+  transition: transform 150ms ease, border-color 150ms, box-shadow 150ms, opacity 150ms;
+  cursor: pointer;
+}
+.s4-map-node:hover {
+  transform: translate(-50%, -50%) scale(1.08);
 }

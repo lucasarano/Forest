@@ -1,32 +1,76 @@
 import { supabase } from './supabase'
+import { normalizeMessages, INCLUDE_PARENT_CONTEXT_KEY } from './chatContext'
+
+const normalizeMemories = (memories) => {
+  if (!Array.isArray(memories)) return []
+  return memories
+    .filter(Boolean)
+    .map((raw) => ({
+      id: typeof raw.id === 'string' && raw.id ? raw.id : `mem_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      title: typeof raw.title === 'string' ? raw.title : '',
+      reason: typeof raw.reason === 'string' ? raw.reason : '',
+      content: typeof raw.content === 'string' ? raw.content : '',
+      enabled: typeof raw.enabled === 'boolean' ? raw.enabled : true,
+      createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : new Date().toISOString(),
+      updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : new Date().toISOString(),
+    }))
+}
+
+const normalizeMemoryOverrides = (value) => {
+  if (!value || typeof value !== 'object') return {}
+  const next = {}
+  for (const [key, raw] of Object.entries(value)) {
+    if (typeof raw === 'boolean') next[key] = raw
+  }
+  return next
+}
 
 // ── Helpers ──────────────────────────────────────────────────
 
 /** Convert a node from React state shape → DB row shape */
-const nodeToRow = (node, treeId) => ({
-  id: node.id,
-  tree_id: treeId,
-  label: node.label || '',
-  parent_id: node.parentId || null,
-  position: node.position || { x: 0, y: 0 },
-  context_anchor: node.contextAnchor || '',
-  highlights: node.highlights || [],
-  messages: node.messages || [],
-})
+const nodeToRow = (node, treeId) => {
+  const memoryOverrides = normalizeMemoryOverrides(node.memoryOverrides || {})
+  if (typeof node.includeParentContext === 'boolean') {
+    memoryOverrides[INCLUDE_PARENT_CONTEXT_KEY] = node.includeParentContext
+  }
+
+  return {
+    id: node.id,
+    tree_id: treeId,
+    label: node.label || '',
+    parent_id: node.parentId || null,
+    position: node.position || { x: 0, y: 0 },
+    context_anchor: node.contextAnchor || '',
+    highlights: node.highlights || [],
+    messages: normalizeMessages(node.messages || []),
+    memories: normalizeMemories(node.memories || []),
+    memory_overrides: memoryOverrides,
+  }
+}
 
 /** Convert a DB row → React state node shape */
-const rowToNode = (row) => ({
-  id: row.id,
-  label: row.label,
-  parentId: row.parent_id || null,
-  position: row.position,
-  contextAnchor: row.context_anchor || '',
-  highlights: row.highlights || [],
-  messages: row.messages || [],
-  // Legacy fields kept for compatibility
-  question: '',
-  aiResponse: '',
-})
+const rowToNode = (row) => {
+  const memoryOverrides = normalizeMemoryOverrides(row.memory_overrides || {})
+  const includeParentContext = typeof memoryOverrides[INCLUDE_PARENT_CONTEXT_KEY] === 'boolean'
+    ? memoryOverrides[INCLUDE_PARENT_CONTEXT_KEY]
+    : true
+
+  return {
+    id: row.id,
+    label: row.label,
+    parentId: row.parent_id || null,
+    position: row.position,
+    contextAnchor: row.context_anchor || '',
+    highlights: row.highlights || [],
+    messages: normalizeMessages(row.messages || []),
+    memories: normalizeMemories(row.memories || []),
+    memoryOverrides,
+    includeParentContext,
+    // Legacy fields kept for compatibility
+    question: '',
+    aiResponse: '',
+  }
+}
 
 /** Convert an edge from React state shape → DB row shape */
 const edgeToRow = (edge, treeId) => ({
@@ -198,4 +242,37 @@ export async function renameTree(treeId, name) {
     .update({ name })
     .eq('id', treeId)
   return { error }
+}
+
+/**
+ * Ensure required context columns exist before enabling MVP context controls.
+ * Returns { error } where error.message is user-friendly if migration is missing.
+ */
+export async function verifyTreeNodeContextSchema() {
+  const { error } = await supabase
+    .from('tree_nodes')
+    .select('id, memories, memory_overrides')
+    .limit(1)
+
+  if (!error) return { error: null }
+
+  const raw = `${error.message || ''} ${error.details || ''}`.toLowerCase()
+  const missingMemories = raw.includes('memories')
+  const missingOverrides = raw.includes('memory_overrides')
+
+  if (missingMemories || missingOverrides) {
+    return {
+      error: {
+        message: 'Database migration required: add tree_nodes.memories and tree_nodes.memory_overrides columns before using chat context controls.',
+        original: error,
+      },
+    }
+  }
+
+  return {
+    error: {
+      message: `Schema verification failed: ${error.message || 'unknown error'}`,
+      original: error,
+    },
+  }
 }
