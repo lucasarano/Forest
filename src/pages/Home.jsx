@@ -1,10 +1,11 @@
 import React, { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { ArrowRight, TreePine } from 'lucide-react'
+import { ArrowRight } from 'lucide-react'
 import KnowledgeGraph from '../components/KnowledgeGraph'
 import Logo from '../components/Logo'
 import Button from '../components/Button'
+import { BUILTIN_STUDY_ID } from '../lib/sprint4/constants'
 
 /** Animation: question mark transforms into a node (concept) - faster transition */
 const QuestionToNodeAnimation = () => {
@@ -149,15 +150,12 @@ const Home = () => {
         <div className="max-w-7xl 2xl:max-w-[1600px] mx-auto px-6 xl:px-8 2xl:px-12 py-4">
           <div className="flex items-center justify-between">
             <Logo size="md" clickable />
-            <div className="flex items-center gap-4">
-              <Link to="/MVP">
-                <Button variant="secondary">Sprint MVP</Button>
+            <div className="flex items-center gap-3">
+              <Link to={`/mvp-v2?study=${BUILTIN_STUDY_ID}&condition=guided&new=1`}>
+                <Button variant="primary">Guided MVP</Button>
               </Link>
-              <Link to="/login">
-                <Button variant="ghost">Sign In</Button>
-              </Link>
-              <Link to="/signup">
-                <Button variant="primary">Get Started</Button>
+              <Link to={`/mvp-v2?study=${BUILTIN_STUDY_ID}&condition=control&new=1`}>
+                <Button variant="secondary">Free-form MVP</Button>
               </Link>
             </div>
           </div>
@@ -184,23 +182,20 @@ const Home = () => {
               a personalized learning experience that adapts to you.
             </p>
             <div className="flex items-center justify-center gap-4">
-              <Link to="/MVP">
-                <Button variant="secondary" className="text-lg px-8 py-4">
-                  Launch Sprint MVP
-                </Button>
-              </Link>
-              <Link to="/signup">
+              <Link to={`/mvp-v2?study=${BUILTIN_STUDY_ID}&condition=guided&new=1`}>
                 <Button variant="primary" className="text-lg px-8 py-4">
                   <span className="flex items-center gap-2">
-                    Start Learning Free
+                    Guided Learning
                     <ArrowRight size={20} />
                   </span>
                 </Button>
               </Link>
-              <Link to="/dashboard">
-                <Button variant="secondary" className="text-lg px-8 py-4 flex items-center gap-2">
-                  <TreePine size={20} />
-                  Forest
+              <Link to={`/mvp-v2?study=${BUILTIN_STUDY_ID}&condition=control&new=1`}>
+                <Button variant="secondary" className="text-lg px-8 py-4">
+                  <span className="flex items-center gap-2">
+                    Free-form Learning
+                    <ArrowRight size={20} />
+                  </span>
                 </Button>
               </Link>
             </div>

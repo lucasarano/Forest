@@ -1,10 +1,15 @@
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph'
 import { z } from 'zod'
 import {
+  BUILTIN_SEED_CONCEPT,
+  BUILTIN_STUDY_ID,
   createEmptyDimensionScores,
+  createEmptyMetrics,
+  DEFAULT_TIME_BUDGET_MS,
   EVALUATION_PROMPT_IDS,
   isMasteredNodeState,
   MAX_VISIBLE_HISTORY,
+  MODEL_BY_CONTEXT,
   NODE_STATES,
   PROMPT_KINDS,
   SPRINT4_CONDITIONS,
@@ -12,6 +17,13 @@ import {
   SPRINT4_PHASES,
 } from './constants.js'
 import { callStructuredPrompt, callTextPrompt } from './ai.js'
+
+/* ── Logging ────────────────────────────────────────────────────── */
+const LOG_PREFIX = '[Sprint4]'
+const log = (tag, data) => {
+  const ts = new Date().toISOString()
+  console.log(`${LOG_PREFIX} ${ts} [${tag}]`, typeof data === 'string' ? data : JSON.stringify(data, null, 2))
+}
 
 const ScoreSchema = z.number().int().min(0).max(2)
 
@@ -31,20 +43,29 @@ const RubricSchema = z.object({
   recallCue: z.string().min(1),
 })
 
+const LightNodeSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  summary: z.string().min(1),
+  initialPrompt: z.string().min(1),
+  parentIds: z.array(z.string()).default([]),
+})
+
 const PlannerNodeSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
   summary: z.string().min(1),
   parentIds: z.array(z.string()).default([]),
   isRoot: z.boolean().optional().default(false),
-  rubric: RubricSchema,
-  promptPack: PromptPackSchema,
+  initialPrompt: z.string().optional().default(''),
+  rubric: RubricSchema.optional(),
+  promptPack: PromptPackSchema.optional(),
 })
 
 const PlannerConfigSchema = z.object({
   conceptSummary: z.string().min(1),
   rootNodeId: z.string().min(1),
-  nodes: z.array(PlannerNodeSchema).min(4).max(8),
+  nodes: z.array(PlannerNodeSchema).min(1).max(8),
   evaluationBundle: z.object({
     prompts: z.array(z.object({
       id: z.enum([
@@ -69,6 +90,10 @@ const AssessmentSchema = z.object({
   misconceptionReason: z.string().default(''),
   missingConcepts: z.array(z.string()).max(6).default([]),
   strengths: z.array(z.string()).max(6).default([]),
+  subtopicSuggestions: z.array(z.object({
+    title: z.string(),
+    reason: z.string().default(''),
+  })).max(3).default([]),
   recommendedAction: z.enum([
     PROMPT_KINDS.TEACH,
     PROMPT_KINDS.REASSESS,
@@ -84,8 +109,18 @@ const AssessmentSchema = z.object({
 
 const ExpansionSchema = z.object({
   reason: z.string().min(1),
-  newNodes: z.array(PlannerNodeSchema).min(1).max(3),
+  newNodes: z.array(LightNodeSchema).min(1).max(1),
   retargetNodeId: z.string().optional().default(''),
+})
+
+const MCQSchema = z.object({
+  question: z.string().min(1),
+  correctAnswer: z.string().min(1),
+  distractors: z.array(z.object({
+    text: z.string().min(1),
+    misconceptionLabel: z.string().default(''),
+  })).min(2).max(4),
+  explanation: z.string().min(1),
 })
 
 const EvaluationScoreSchema = z.object({
@@ -178,6 +213,20 @@ const computeDepth = (nodeId, nodeMap, cache = new Map(), trail = new Set()) => 
   return parentDepth
 }
 
+const addRuntimeFields = (node) => ({
+  ...node,
+  status: node.status || ((node.parentIds || []).length === 0 ? NODE_STATES.ACTIVE : NODE_STATES.LOCKED),
+  promptKind: node.promptKind || PROMPT_KINDS.ASSESS,
+  supportLevel: node.supportLevel || 0,
+  withSupportUsed: node.withSupportUsed || false,
+  successfulRecallCount: node.successfulRecallCount || 0,
+  recallScheduledAtTurn: node.recallScheduledAtTurn ?? null,
+  bestScores: node.bestScores || createEmptyDimensionScores(),
+  misconceptionStreak: node.misconceptionStreak || 0,
+  attempts: node.attempts || 0,
+  lastAssessmentSummary: node.lastAssessmentSummary || '',
+})
+
 const normalizePlannerNodes = (plannerOutput) => {
   const rawNodes = plannerOutput.nodes || []
   const idMap = new Map()
@@ -191,8 +240,9 @@ const normalizePlannerNodes = (plannerOutput) => {
       summary: node.summary.trim(),
       parentIds: node.parentIds || [],
       isRoot: !!node.isRoot,
-      rubric: node.rubric,
-      promptPack: node.promptPack,
+      initialPrompt: node.initialPrompt || node.promptPack?.initial || '',
+      rubric: node.rubric || null,
+      promptPack: node.promptPack || null,
       orderIndex: index,
     }
   })
@@ -208,10 +258,6 @@ const normalizePlannerNodes = (plannerOutput) => {
     }).filter((parentId) => parentId && parentId !== node.id))
   })
 
-  const explicitRoot = normalized.find((node) => node.id === slugify(plannerOutput.rootNodeId)) ||
-    normalized.find((node) => node.isRoot) ||
-    normalized[normalized.length - 1]
-
   const nodeMap = new Map(normalized.map((node) => [node.id, node]))
   const depthCache = new Map()
 
@@ -219,95 +265,65 @@ const normalizePlannerNodes = (plannerOutput) => {
     node.depth = computeDepth(node.id, nodeMap, depthCache)
   })
 
-  if (explicitRoot && explicitRoot.parentIds.length === 0 && normalized.length > 1) {
-    const prerequisiteIds = normalized
-      .filter((node) => node.id !== explicitRoot.id && node.depth <= explicitRoot.depth)
-      .slice(0, Math.min(3, normalized.length - 1))
-      .map((node) => node.id)
-    explicitRoot.parentIds = prerequisiteIds
-    explicitRoot.depth = computeDepth(explicitRoot.id, nodeMap, new Map())
-  }
-
-  return sortNodes(normalized).map((node, index) => ({
+  return sortNodes(normalized).map((node, index) => addRuntimeFields({
     ...node,
     orderIndex: index,
-    status: node.parentIds.length === 0 ? NODE_STATES.ACTIVE : NODE_STATES.LOCKED,
-    promptKind: PROMPT_KINDS.ASSESS,
-    supportLevel: 0,
-    withSupportUsed: false,
-    successfulRecallCount: 0,
-    recallScheduledAtTurn: null,
-    bestScores: createEmptyDimensionScores(),
-    misconceptionStreak: 0,
-    attempts: 0,
-    lastAssessmentSummary: '',
   }))
 }
 
-const createPlannerPrompt = (seedConcept) => `
-Seed concept: ${seedConcept}
+const normalizeLightNodes = (lightNodes, existingGraphNodes = []) => {
+  const existingIds = new Set(existingGraphNodes.map((n) => n.id))
+  const baseIndex = existingGraphNodes.length
 
-Create an initial diagnostic mastery graph for a single learning session.
+  return lightNodes.map((node, index) => {
+    let nodeId = slugify(node.id || node.title)
+    if (existingIds.has(nodeId)) nodeId = `${nodeId}-${baseIndex + index + 1}`
+    existingIds.add(nodeId)
 
-Rules:
-- Return 4 to 8 concept-specific nodes generated from the seed concept.
-- Include one integrator/root node that depends on prerequisite subskills.
-- parentIds point from a node to the prerequisite nodes it depends on.
-- Make subskills diagnostically useful, not just broad topics.
-- Misconceptions must be plausible wrong ideas, not trivial mistakes.
-- Do not include any hardcoded content unrelated to the seed concept.
+    const parentIds = dedupe((node.parentIds || []).map(slugify).filter((pid) => pid !== nodeId))
 
-Return JSON matching this exact structure:
-{
-  "conceptSummary": "<one-sentence overview of the seed concept>",
-  "rootNodeId": "<id of the integrator node>",
-  "nodes": [
-    {
-      "id": "<kebab-case-id>",
-      "title": "<short title>",
-      "summary": "<1-2 sentence description>",
-      "parentIds": ["<id of prerequisite node>"],
-      "isRoot": false,
-      "rubric": {
-        "explanationFocus": "<what a good explanation should cover for this node>",
-        "causalReasoningFocus": "<what cause-effect reasoning to look for>",
-        "transferFocus": "<how the learner should apply this to a new context>",
-        "misconceptionTargets": ["<plausible misconception 1>", "<plausible misconception 2>"],
-        "recallCue": "<short cue to trigger recall of this concept later>"
-      },
-      "promptPack": {
-        "initial": "<the first assessment question posed to the learner for this node>",
-        "teach": "<a targeted teaching prompt when the learner struggles>",
-        "reassess": "<a follow-up assessment question after teaching>",
-        "transfer": "<a transfer question applying the concept to a novel scenario>",
-        "recall": "<a spaced-recall prompt to test retention later>"
-      }
-    }
-  ],
-  "evaluationBundle": {
-    "prompts": [
-      { "id": "explanation", "title": "<title>", "prompt": "<open-ended explanation question>" },
-      { "id": "transfer", "title": "<title>", "prompt": "<transfer/application question>" },
-      { "id": "misconception", "title": "<title>", "prompt": "<question probing a common misconception>" }
-    ],
-    "scoringNotes": ["<scoring guideline 1>", "<scoring guideline 2>", "<scoring guideline 3>"]
-  }
+    return addRuntimeFields({
+      id: nodeId,
+      title: node.title.trim(),
+      summary: node.summary.trim(),
+      initialPrompt: node.initialPrompt || '',
+      parentIds,
+      isRoot: false,
+      rubric: null,
+      promptPack: null,
+      orderIndex: baseIndex + index,
+      depth: 0,
+    })
+  })
 }
 
-Every field shown above is required. Do not omit any.
-`
+const getNodePrompt = (node, promptKind) => {
+  if (node.promptPack?.[promptKind]) return node.promptPack[promptKind]
+  if (node.promptPack?.initial) return node.promptPack.initial
+  if (node.initialPrompt) return node.initialPrompt
+  return node.summary
+}
 
-const createAssessmentPrompt = ({ seedConcept, node, recentMessages, userMessage, helpRequested }) => `
+const getRubricSection = (node) => {
+  if (node.rubric) {
+    return [
+      `- Explanation focus: ${node.rubric.explanationFocus}`,
+      `- Causal reasoning focus: ${node.rubric.causalReasoningFocus}`,
+      `- Transfer focus: ${node.rubric.transferFocus}`,
+      `- Recall cue: ${node.rubric.recallCue}`,
+      `- Target misconceptions: ${(node.rubric.misconceptionTargets || []).join('; ')}`,
+    ].join('\n')
+  }
+  return `- Node summary (no detailed rubric): ${node.summary}\n- Assess explanation, causal reasoning, transfer ability, and misconception resistance based on the node summary.`
+}
+
+const createAssessmentPrompt = ({ seedConcept, node, recentMessages, userMessage, helpRequested, uploadedDocContext }) => `
 Seed concept: ${seedConcept}
 Current node title: ${node.title}
 Current node summary: ${node.summary}
 Current prompt kind: ${node.promptKind}
 Node rubric:
-- Explanation focus: ${node.rubric.explanationFocus}
-- Causal reasoning focus: ${node.rubric.causalReasoningFocus}
-- Transfer focus: ${node.rubric.transferFocus}
-- Recall cue: ${node.rubric.recallCue}
-- Target misconceptions: ${(node.rubric.misconceptionTargets || []).join('; ')}
+${getRubricSection(node)}
 
 Recent conversation for this node:
 ${recentMessages || 'No prior node conversation.'}
@@ -316,25 +332,71 @@ Latest learner response:
 ${userMessage || '(blank)'}
 
 Help requested: ${helpRequested ? 'yes' : 'no'}
-
+${uploadedDocContext ? `\nReference material provided by learner:\n${uploadedDocContext}\n` : ''}
 Score the learner's latest response only. Use 0 = absent/incorrect, 1 = partial, 2 = strong.
+IMPORTANT scoring rules (follow ALL):
+- A short or terse answer that is directionally correct should score at least 1. Only score 0 when the concept is genuinely absent or wrong.
+- Brevity, informal language, or typos are NEVER a reason to lower a score.
+- Do NOT penalize for omitting mathematical notation, formulas, or equations. Conceptual understanding in plain language is sufficient for full marks (2).
+- If the learner restates the core idea correctly, even without elaboration, give at least 1 for explanation and causalReasoning.
+- Be generous: when in doubt between two scores, pick the higher one. The goal is to help the learner progress, not gatekeep.
+- If the learner expresses confusion or says they don't understand, set recommendedAction to "teach" and keep scores at their current best — do not retroactively lower scores.
+Also identify if the learner is exploring any subtopics or has knowledge gaps that would benefit from a new focused node.
+
+Return JSON matching this exact structure:
+{
+  "explanation": 0,
+  "causalReasoning": 0,
+  "transfer": 0,
+  "misconceptionResistance": 0,
+  "misconceptionDetected": false,
+  "misconceptionLabel": "",
+  "misconceptionReason": "",
+  "missingConcepts": [],
+  "strengths": [],
+  "subtopicSuggestions": [{ "title": "<subtopic>", "reason": "<why>" }],
+  "recommendedAction": "reassess",
+  "conciseRationale": "<1-2 sentences>",
+  "tutorFocus": "<what the tutor should address next>",
+  "confidence": 0.5
+}
+
+All fields are required. subtopicSuggestions can be an empty array if no subtopics are detected. recommendedAction must be one of: teach, reassess, transfer, recall, mark_partial, mark_mastered.
 `
 
-const createExpansionPrompt = ({ seedConcept, node, latestAssessment }) => `
+const createExpansionPrompt = ({ seedConcept, node, latestAssessment, skippedNodeTitles, confusionTopic }) => `
 Seed concept: ${seedConcept}
 Node needing expansion:
 - title: ${node.title}
 - summary: ${node.summary}
-- misconception targets: ${(node.rubric.misconceptionTargets || []).join('; ')}
 
 Latest assessment:
 - misconception detected: ${latestAssessment?.misconceptionDetected ? 'yes' : 'no'}
 - misconception label: ${latestAssessment?.misconceptionLabel || ''}
 - rationale: ${latestAssessment?.conciseRationale || ''}
 - missing concepts: ${(latestAssessment?.missingConcepts || []).join('; ')}
+- subtopic suggestions: ${(latestAssessment?.subtopicSuggestions || []).map((s) => `${s.title}: ${s.reason}`).join('; ') || 'none'}
+${confusionTopic ? `\nThe learner explicitly said they don't understand: "${confusionTopic}"\nCreate a focused subnode specifically about this topic to help them build understanding.\n` : ''}
+${skippedNodeTitles?.length ? `\nSkipped topics (the learner chose to skip these — do NOT create nodes covering these concepts):\n${skippedNodeTitles.map((t) => `- ${t}`).join('\n')}\n` : ''}
+Generate exactly 1 new focused node that addresses the single most critical gap, misconception, or missing concept.
+The node should be a self-contained concept that helps build toward understanding the parent node.
+Do NOT generate multiple nodes — pick the single most important one.
+Do NOT recreate or rephrase any skipped topic.
 
-Generate 1 to 3 new prerequisite nodes that would help remediate this gap.
-These new nodes will become prerequisites of the current node.
+Return JSON matching this structure:
+{
+  "reason": "<why this node is needed>",
+  "newNodes": [
+    {
+      "id": "<kebab-case-id>",
+      "title": "<short title>",
+      "summary": "<1-2 sentence description>",
+      "initialPrompt": "<the first question to pose to the learner for this node>",
+      "parentIds": []
+    }
+  ],
+  "retargetNodeId": "<optional: id of which existing node to redirect the learner to>"
+}
 `
 
 const createGuidedTutorPrompt = ({
@@ -343,6 +405,7 @@ const createGuidedTutorPrompt = ({
   decision,
   assessment,
   recentMessages,
+  uploadedDocContext,
 }) => `
 You are Forest's student-facing tutor for a guided diagnostic learning session.
 
@@ -357,7 +420,7 @@ Assessment strengths: ${(assessment?.strengths || []).join('; ') || 'none'}
 Misconception status: ${assessment?.misconceptionDetected ? `${assessment?.misconceptionLabel}: ${assessment?.misconceptionReason}` : 'none'}
 Recent conversation:
 ${recentMessages || 'No prior conversation.'}
-
+${uploadedDocContext ? `\nReference material provided by learner:\n${uploadedDocContext}\n` : ''}
 Behavior rules:
 - Speak directly to the learner.
 - Keep the response concise and high-signal.
@@ -365,6 +428,38 @@ Behavior rules:
 - End with exactly one focused next question unless the session is wrapping up.
 - Do not mention internal scores, nodes, rubric dimensions, or mastery logic.
 - If the node was just mastered, acknowledge progress briefly and steer to the next useful prompt.
+- NEVER ask the learner to write mathematical formulas, equations, or notation. Accept conceptual or plain-language explanations. You may show formulas when teaching, but do not require the learner to produce them.
+`
+
+const createMCQPrompt = ({ seedConcept, node, latestAssessment }) => `
+Seed concept: ${seedConcept}
+Node: ${node.title}
+Node summary: ${node.summary}
+${latestAssessment?.misconceptionLabel ? `Detected misconception: ${latestAssessment.misconceptionLabel}` : ''}
+
+Generate a multiple choice question that tests understanding of this concept.
+Include one correct answer and 2-4 distractors. Each distractor should represent a plausible misconception.
+
+Return JSON matching this structure:
+{
+  "question": "<the question>",
+  "correctAnswer": "<the correct answer text>",
+  "distractors": [
+    { "text": "<wrong answer>", "misconceptionLabel": "<what wrong belief this represents>" }
+  ],
+  "explanation": "<explanation of why the correct answer is right>"
+}
+`
+
+const createChainedReasoningPrompt = ({ seedConcept, node, parentNodes }) => `
+Seed concept: ${seedConcept}
+Current node: ${node.title} — ${node.summary}
+Prerequisite nodes the learner has studied:
+${parentNodes.map((p) => `- ${p.title}: ${p.summary}`).join('\n')}
+
+Create a question that requires the learner to integrate their understanding of the prerequisite concepts to reason about the current node.
+The question should explicitly reference the prerequisite concepts and ask the learner to connect them.
+Return only the question text as a plain string.
 `
 
 const createControlTutorSystemPrompt = (seedConcept) => `You are a helpful tutor for the concept "${seedConcept}".
@@ -395,6 +490,23 @@ Scoring notes:
 ${(evaluationBundle.scoringNotes || []).map((note, index) => `${index + 1}. ${note}`).join('\n')}
 
 Score each answer from 0 to 2. Evaluate only from these answers. Do not use any internal session evidence.
+
+Return JSON matching this exact structure:
+{
+  "answers": [
+    {
+      "promptId": "<the Prompt ID from above, e.g. explanation>",
+      "score": 0,
+      "rationale": "<1-2 sentence justification for the score>",
+      "strengths": ["<strength 1>"],
+      "gaps": ["<gap 1>"]
+    }
+  ],
+  "overallScore": 0,
+  "summary": "<1-2 sentence overall assessment>"
+}
+
+The "answers" array must contain exactly 3 entries, one per prompt above, using the exact Prompt ID values. Every field is required.
 `
 
 const formatRecentMessages = (messages, nodeId) => messages
@@ -426,9 +538,18 @@ const isNodeAvailable = (node, nodeMap) => (node.parentIds || []).every((parentI
 const getNextEligibleNode = (session, preferredNodeId = '') => {
   const nodeMap = getNodeMap(session.graphNodes)
   const sorted = sortNodes(session.graphNodes || [])
+  log('getNextEligibleNode:start', {
+    preferredNodeId,
+    currentNodeId: session.currentNodeId,
+    turnIndex: session.turnIndex,
+    nodes: sorted.map((n) => ({ id: n.id, status: n.status, parentIds: n.parentIds })),
+  })
   if (preferredNodeId) {
     const preferred = nodeMap.get(preferredNodeId)
-    if (preferred && preferred.status !== NODE_STATES.LOCKED) return preferred
+    if (preferred && preferred.status !== NODE_STATES.LOCKED) {
+      log('getNextEligibleNode:result', { selected: preferred.id, reason: 'preferred' })
+      return preferred
+    }
   }
 
   const dueRecallNode = sorted.find((node) =>
@@ -438,6 +559,7 @@ const getNextEligibleNode = (session, preferredNodeId = '') => {
     node.id !== session.currentNodeId
   )
   if (dueRecallNode && isNodeAvailable(dueRecallNode, nodeMap)) {
+    log('getNextEligibleNode:result', { selected: dueRecallNode.id, reason: 'due_recall' })
     return dueRecallNode
   }
 
@@ -445,9 +567,13 @@ const getNextEligibleNode = (session, preferredNodeId = '') => {
     (node.status === NODE_STATES.ACTIVE || node.status === NODE_STATES.PARTIAL) &&
     isNodeAvailable(node, nodeMap)
   )
-  if (activeNode) return activeNode
+  if (activeNode) {
+    log('getNextEligibleNode:result', { selected: activeNode.id, reason: 'active_or_partial' })
+    return activeNode
+  }
 
   const lockedRoot = sorted.find((node) => node.status === NODE_STATES.LOCKED && isNodeAvailable(node, nodeMap))
+  log('getNextEligibleNode:result', { selected: lockedRoot?.id || null, reason: lockedRoot ? 'locked_root_available' : 'none_found' })
   return lockedRoot || null
 }
 
@@ -463,21 +589,32 @@ const getAlternativeEligibleNode = (session, excludedNodeId) => {
 
 const markDependentAvailability = (graphNodes) => {
   const nodeMap = getNodeMap(graphNodes)
-  return sortNodes(graphNodes).map((node) => {
+  log('markDependentAvailability:input', graphNodes.map((n) => ({
+    id: n.id, status: n.status, parentIds: n.parentIds,
+  })))
+  const result = sortNodes(graphNodes).map((node) => {
     if (isMasteredNodeState(node.status)) return node
-    if (isNodeAvailable(node, nodeMap)) {
-      return {
-        ...node,
-        status: node.status === NODE_STATES.LOCKED ? NODE_STATES.ACTIVE : node.status,
+    const available = isNodeAvailable(node, nodeMap)
+    const parentStatuses = (node.parentIds || []).map((pid) => {
+      const p = nodeMap.get(pid)
+      return { id: pid, status: p?.status || 'NOT_FOUND', mastered: p ? isMasteredNodeState(p.status) : false }
+    })
+    if (available) {
+      const newStatus = node.status === NODE_STATES.LOCKED ? NODE_STATES.ACTIVE : node.status
+      if (newStatus !== node.status) {
+        log('markDependentAvailability:unlock', { id: node.id, from: node.status, to: newStatus, parentStatuses })
       }
+      return { ...node, status: newStatus }
     }
-    return {
-      ...node,
-      status: node.status === NODE_STATES.ACTIVE || node.status === NODE_STATES.PARTIAL
-        ? NODE_STATES.LOCKED
-        : node.status,
+    const newStatus = (node.status === NODE_STATES.ACTIVE || node.status === NODE_STATES.PARTIAL)
+      ? NODE_STATES.LOCKED : node.status
+    if (newStatus !== node.status) {
+      log('markDependentAvailability:lock', { id: node.id, from: node.status, to: newStatus, parentStatuses })
     }
+    return { ...node, status: newStatus }
   })
+  log('markDependentAvailability:output', result.map((n) => ({ id: n.id, status: n.status })))
+  return result
 }
 
 const createMessage = ({ role, content, nodeId = null, visibleToStudent = true, metadata = {} }) => ({
@@ -524,8 +661,7 @@ const getNodeMasteryState = (node, evidenceRecords) => {
     bestScores.explanation >= 2 &&
     bestScores.causalReasoning >= 2 &&
     bestScores.transfer >= 1 &&
-    bestScores.misconceptionResistance >= 1 &&
-    (node.successfulRecallCount || 0) >= 2
+    (node.successfulRecallCount || 0) >= 1
 
   if (!thresholdMet) return null
   return node.withSupportUsed ? NODE_STATES.MASTERED_WITH_SUPPORT : NODE_STATES.MASTERED_INDEPENDENTLY
@@ -541,6 +677,7 @@ const createFallbackAssessment = (helpRequested) => ({
   misconceptionReason: '',
   missingConcepts: ['The learner needs a more specific explanation.'],
   strengths: [],
+  subtopicSuggestions: [],
   recommendedAction: helpRequested ? PROMPT_KINDS.TEACH : PROMPT_KINDS.REASSESS,
   conciseRationale: helpRequested
     ? 'The learner explicitly asked for help before producing enough evidence.'
@@ -551,7 +688,31 @@ const createFallbackAssessment = (helpRequested) => ({
   confidence: 0.15,
 })
 
-const decideNextAction = ({ node, assessment, session, evidenceRecords }) => {
+const getUploadedDocContext = (session) => {
+  const docs = session.uploadedDocuments || []
+  if (!docs.length) return ''
+  const combined = docs.map((d) => d.extractedText || '').join('\n\n')
+  return combined.slice(0, 2000)
+}
+
+const CONFUSION_TOPIC_PATTERNS = [
+  /i\s*(?:don'?t|do\s*not)\s*(?:understand|get|know)\s+(?:what\s+)?(.{3,80})/i,
+  /(?:don'?t|do\s*not)\s*(?:understand|get)\s+(?:how|why|what)\s+(.{3,80})/i,
+  /(?:confused|lost)\s+(?:about|by|on)\s+(.{3,80})/i,
+  /(?:what\s+(?:is|are|does)|explain)\s+(.{3,80})/i,
+  /i\s*(?:don'?t|do\s*not)\s*(?:understand|know|get)\b/i,
+]
+
+const extractConfusionTopic = (msg) => {
+  if (!msg) return null
+  for (const pat of CONFUSION_TOPIC_PATTERNS) {
+    const m = msg.match(pat)
+    if (m) return m[1]?.replace(/[.!?,;]+$/, '').trim() || null
+  }
+  return null
+}
+
+const decideNextAction = ({ node, assessment, session, evidenceRecords, userMessage }) => {
   const nodeEvidence = getNodeEvidence(evidenceRecords, node.id)
   const priorMisconceptionCount = nodeEvidence
     .slice(-2)
@@ -566,13 +727,37 @@ const decideNextAction = ({ node, assessment, session, evidenceRecords }) => {
     reason: assessment.conciseRationale,
   }
 
-  if (assessment.misconceptionDetected && priorMisconceptionCount >= 2) {
+  const bestScores = getBestScores(node, evidenceRecords)
+  const hasStrongCore = bestScores.explanation >= 2 && bestScores.causalReasoning >= 2
+
+  const nodeAttempts = (node.attempts || 0)
+  const confusionTopic = extractConfusionTopic(userMessage)
+  const userExpressedConfusion = !!confusionTopic
+
+  const shouldExpand =
+    (assessment.misconceptionDetected && priorMisconceptionCount >= 2) ||
+    (assessment.missingConcepts?.length >= 3 && !hasStrongCore && nodeAttempts >= 1) ||
+    userExpressedConfusion
+
+  log('decideNextAction:expandCheck', {
+    shouldExpand,
+    misconceptionDetected: assessment.misconceptionDetected,
+    priorMisconceptionCount,
+    subtopicSuggestionCount: assessment.subtopicSuggestions?.length || 0,
+    missingConceptCount: assessment.missingConcepts?.length || 0,
+    nodeAttempts,
+    userExpressedConfusion,
+    confusionTopic,
+    hasStrongCore,
+    bestScores,
+  })
+
+  if (shouldExpand) {
     next.nextAction = 'expand_graph'
+    if (confusionTopic) next.confusionTopic = confusionTopic
     return next
   }
 
-  const bestScores = getBestScores(node, evidenceRecords)
-  const hasStrongCore = bestScores.explanation >= 2 && bestScores.causalReasoning >= 2
   const hasTransfer = bestScores.transfer >= 1
 
   if (node.promptKind === PROMPT_KINDS.RECALL) {
@@ -582,7 +767,13 @@ const decideNextAction = ({ node, assessment, session, evidenceRecords }) => {
   }
 
   if (assessment.misconceptionDetected) {
-    next.nextAction = PROMPT_KINDS.TEACH
+    next.nextAction = PROMPT_KINDS.MCQ
+    return next
+  }
+
+  const turnsSinceLastMcq = nodeAttempts - (node.lastMcqAtAttempt || 0)
+  if (turnsSinceLastMcq >= 3 && nodeAttempts >= 2 && !hasStrongCore) {
+    next.nextAction = PROMPT_KINDS.MCQ
     return next
   }
 
@@ -603,7 +794,14 @@ const decideNextAction = ({ node, assessment, session, evidenceRecords }) => {
     return next
   }
 
-  if ((node.successfulRecallCount || 0) < 2) {
+  const recallJustSucceeded = node.promptKind === PROMPT_KINDS.RECALL &&
+    assessment.explanation >= 2 && assessment.causalReasoning >= 1
+  const mcqJustCorrect = node.promptKind === PROMPT_KINDS.MCQ &&
+    userMessage && /\(correct\)/i.test(userMessage)
+  const effectiveRecallCount = (node.successfulRecallCount || 0) +
+    (recallJustSucceeded || mcqJustCorrect ? 1 : 0)
+
+  if (effectiveRecallCount < 1) {
     next.nextAction = PROMPT_KINDS.RECALL
     next.markState = NODE_STATES.PARTIAL
     next.scheduleRecall = true
@@ -616,37 +814,72 @@ const decideNextAction = ({ node, assessment, session, evidenceRecords }) => {
 }
 
 const plannerNode = async (state) => {
-  const { session, activeNode, latestAssessment, seedConcept } = state
+  const { session, activeNode, latestAssessment, seedConcept, decision } = state
+  const skippedNodeTitles = (session.graphNodes || [])
+    .filter((n) => n.status === NODE_STATES.SKIPPED)
+    .map((n) => n.title)
+  const confusionTopic = decision?.confusionTopic || null
+  log('plannerNode:start', {
+    activeNodeId: activeNode?.id,
+    activeNodeTitle: activeNode?.title,
+    existingNodeCount: (session.graphNodes || []).length,
+    existingNodeIds: (session.graphNodes || []).map((n) => n.id),
+    skippedNodeTitles,
+    confusionTopic,
+  })
   const expansion = await callStructuredPrompt({
     systemPrompt: 'You are Forest Sprint 4 ConceptPlanner. Return structured JSON only.',
     userPrompt: createExpansionPrompt({
       seedConcept,
       node: activeNode,
       latestAssessment,
+      skippedNodeTitles,
+      confusionTopic,
     }),
     schema: ExpansionSchema,
+    model: MODEL_BY_CONTEXT.planner,
   })
 
-  const normalizedNewNodes = normalizePlannerNodes({
-    nodes: expansion.newNodes,
-    rootNodeId: expansion.retargetNodeId || activeNode.id,
-  }).map((node, index) => ({
-    ...node,
-    status: node.parentIds.length === 0 ? NODE_STATES.ACTIVE : NODE_STATES.LOCKED,
-    orderIndex: (session.graphNodes?.length || 0) + index,
-  }))
+  const newNodes = normalizeLightNodes(expansion.newNodes, session.graphNodes || [])
+
+  const existingIds = new Set((session.graphNodes || []).map((n) => n.id))
+  const rawRetarget = slugify(expansion.retargetNodeId || '')
+  const retargetNodeId = existingIds.has(rawRetarget) ? rawRetarget : ''
+
+  log('plannerNode:result', {
+    reason: expansion.reason,
+    retargetNodeId,
+    rawRetargetNodeId: expansion.retargetNodeId,
+    rawNewNodeCount: expansion.newNodes.length,
+    normalizedNewNodes: newNodes.map((n) => ({
+      id: n.id, title: n.title, status: n.status, parentIds: n.parentIds,
+    })),
+  })
 
   return {
     plannerPatch: {
       reason: expansion.reason,
-      newNodes: normalizedNewNodes,
+      newNodes,
+      retargetNodeId,
     },
   }
 }
 
 const assessmentNode = async (state) => {
   const { session, activeNode, userMessage, helpRequested, seedConcept } = state
+  log('assessmentNode:start', {
+    activeNodeId: activeNode?.id,
+    activeNodeTitle: activeNode?.title,
+    activeNodeStatus: activeNode?.status,
+    activeNodePromptKind: activeNode?.promptKind,
+    userMessageLength: userMessage?.length || 0,
+    userMessagePreview: (userMessage || '').slice(0, 120),
+    helpRequested,
+    messageCount: (session.messages || []).length,
+    nodeMessageCount: (session.messages || []).filter((m) => m.nodeId === activeNode?.id).length,
+  })
   if (!userMessage.trim()) {
+    log('assessmentNode:fallback', 'empty user message, using fallback assessment')
     return {
       latestAssessment: createFallbackAssessment(helpRequested),
     }
@@ -660,28 +893,65 @@ const assessmentNode = async (state) => {
       recentMessages: formatRecentMessages(session.messages || [], activeNode.id),
       userMessage,
       helpRequested,
+      uploadedDocContext: getUploadedDocContext(session),
     }),
     schema: AssessmentSchema,
+    model: MODEL_BY_CONTEXT.assessment,
+  })
+
+  log('assessmentNode:result', {
+    explanation: assessment.explanation,
+    causalReasoning: assessment.causalReasoning,
+    transfer: assessment.transfer,
+    misconceptionDetected: assessment.misconceptionDetected,
+    misconceptionLabel: assessment.misconceptionLabel,
+    recommendedAction: assessment.recommendedAction,
+    subtopicSuggestions: assessment.subtopicSuggestions?.length || 0,
+    missingConcepts: assessment.missingConcepts,
+    rationale: assessment.conciseRationale,
   })
 
   return { latestAssessment: assessment }
 }
 
 const decisionNode = async (state) => {
-  const { session, activeNode, latestAssessment } = state
-  return {
-    decision: decideNextAction({
-      node: activeNode,
-      assessment: latestAssessment,
-      session,
-      evidenceRecords: session.evidenceRecords || [],
-    }),
-  }
+  const { session, activeNode, latestAssessment, userMessage } = state
+  const decision = decideNextAction({
+    node: activeNode,
+    assessment: latestAssessment,
+    session,
+    evidenceRecords: session.evidenceRecords || [],
+    userMessage,
+  })
+  log('decisionNode:result', {
+    activeNodeId: activeNode?.id,
+    nextAction: decision.nextAction,
+    markState: decision.markState,
+    scheduleRecall: decision.scheduleRecall,
+    activateNodeId: decision.activateNodeId,
+    confusionTopic: decision.confusionTopic || null,
+    reason: decision.reason,
+  })
+  return { decision }
 }
 
 const tutorNode = async (state) => {
   const { seedConcept, session, activeNode, latestAssessment, decision, plannerPatch, userMessage, helpRequested } = state
   const currentTurn = (session.turnIndex || 0) + 1
+
+  log('tutorNode:start', {
+    activeNodeId: activeNode?.id,
+    activeNodeTitle: activeNode?.title,
+    activeNodeStatus: activeNode?.status,
+    activeNodeParentIds: activeNode?.parentIds,
+    decisionAction: decision?.nextAction,
+    decisionMarkState: decision?.markState,
+    hasPlannerPatch: !!plannerPatch?.newNodes?.length,
+    newNodeCount: plannerPatch?.newNodes?.length || 0,
+    currentTurn,
+    currentNodeId: session.currentNodeId,
+  })
+
   const userMessageEntry = createMessage({
     role: 'user',
     content: userMessage.trim() || (helpRequested ? "I'm stuck." : ''),
@@ -696,16 +966,32 @@ const tutorNode = async (state) => {
   })]
 
   if (plannerPatch?.newNodes?.length) {
+    const newNodeIds = plannerPatch.newNodes.map((entry) => entry.id)
+    log('tutorNode:expansion', {
+      activeNodeId: activeNode.id,
+      activeNodePreviousParentIds: activeNode.parentIds,
+      activeNodePreviousStatus: activeNode.status,
+      newChildNodeIds: newNodeIds,
+      action: 'Adding new nodes as parents of active node, locking active node',
+    })
     graphNodes = graphNodes.map((node) => (
       node.id === activeNode.id
         ? {
             ...node,
-            parentIds: dedupe([...(node.parentIds || []), ...plannerPatch.newNodes.map((entry) => entry.id)]),
+            parentIds: dedupe([...(node.parentIds || []), ...newNodeIds]),
             status: NODE_STATES.LOCKED,
           }
         : node
     ))
     graphNodes.push(...plannerPatch.newNodes)
+    const activeAfterPatch = graphNodes.find((n) => n.id === activeNode.id)
+    log('tutorNode:expansion:afterPatch', {
+      activeNodeId: activeNode.id,
+      activeNodeNewParentIds: activeAfterPatch?.parentIds,
+      activeNodeNewStatus: activeAfterPatch?.status,
+      totalNodes: graphNodes.length,
+      allNodes: graphNodes.map((n) => ({ id: n.id, status: n.status, parentIds: n.parentIds })),
+    })
     events.push(createEvent('graph_expanded', {
       sourceNodeId: activeNode.id,
       newNodeIds: plannerPatch.newNodes.map((node) => node.id),
@@ -725,22 +1011,37 @@ const tutorNode = async (state) => {
   })
   const evidenceRecords = [...(session.evidenceRecords || []), evidenceRecord]
 
+  if (helpRequested || decision.nextAction === PROMPT_KINDS.TEACH) {
+    events.push(createEvent('explanation_requested', {
+      nodeId: currentNode.id,
+      turnIndex: currentTurn,
+    }))
+  }
+
+  const previousNodeId = session.currentNodeId
+  const newAttempts = (currentNode.attempts || 0) + 1
   const nextNodeState = {
     ...currentNode,
-    attempts: (currentNode.attempts || 0) + 1,
+    attempts: newAttempts,
     supportLevel: helpRequested ? (currentNode.supportLevel || 0) + 1 : currentNode.supportLevel || 0,
     withSupportUsed: currentNode.withSupportUsed || supportUsed,
     bestScores: getBestScores(currentNode, evidenceRecords),
     lastAssessmentSummary: latestAssessment.conciseRationale,
     promptKind: decision.nextAction === 'mark_mastered'
       ? PROMPT_KINDS.RECALL
-      : decision.nextAction,
+      : (decision.nextAction === 'expand_graph' ? currentNode.promptKind : decision.nextAction),
+    lastMcqAtAttempt: decision.nextAction === PROMPT_KINDS.MCQ ? newAttempts : (currentNode.lastMcqAtAttempt || 0),
   }
 
-  if (currentNode.promptKind === PROMPT_KINDS.RECALL && latestAssessment.explanation >= 2 && latestAssessment.causalReasoning >= 1) {
+  const recallSucceeded = currentNode.promptKind === PROMPT_KINDS.RECALL &&
+    latestAssessment.explanation >= 2 && latestAssessment.causalReasoning >= 1
+  const mcqCorrect = currentNode.promptKind === PROMPT_KINDS.MCQ &&
+    userMessage && /\(correct\)/i.test(userMessage)
+
+  if (recallSucceeded || mcqCorrect) {
     nextNodeState.successfulRecallCount = (currentNode.successfulRecallCount || 0) + 1
     nextNodeState.recallScheduledAtTurn = null
-    events.push(createEvent('recall_success', {
+    events.push(createEvent(mcqCorrect ? 'mcq_correct' : 'recall_success', {
       nodeId: currentNode.id,
       successfulRecallCount: nextNodeState.successfulRecallCount,
     }))
@@ -766,27 +1067,53 @@ const tutorNode = async (state) => {
       nodeId: currentNode.id,
       status: masteryState,
     }))
+    events.push(createEvent('node_completed', {
+      nodeId: currentNode.id,
+      completedAt: new Date().toISOString(),
+      turnIndex: currentTurn,
+      finalStatus: masteryState,
+    }))
   }
 
+  log('tutorNode:nodeStateUpdate', {
+    nodeId: nextNodeState.id,
+    previousStatus: currentNode.status,
+    newStatus: nextNodeState.status,
+    promptKind: nextNodeState.promptKind,
+    attempts: nextNodeState.attempts,
+    bestScores: nextNodeState.bestScores,
+    masteryState,
+    parentIds: nextNodeState.parentIds,
+  })
+
   graphNodes = graphNodes.map((node) => (node.id === nextNodeState.id ? nextNodeState : node))
+  log('tutorNode:beforeMarkDependentAvailability', graphNodes.map((n) => ({
+    id: n.id, status: n.status, parentIds: n.parentIds,
+  })))
   graphNodes = markDependentAvailability(graphNodes)
 
+  log('tutorNode:afterMarkDependentAvailability', graphNodes.map((n) => ({
+    id: n.id, status: n.status,
+  })))
+
+  const retargetPreferred = plannerPatch?.retargetNodeId || ''
+  const preferNodeId = retargetPreferred || nextNodeState.id
   let nextActiveNode = getNextEligibleNode({
     ...session,
     graphNodes,
     evidenceRecords,
     turnIndex: currentTurn,
     currentNodeId: nextNodeState.id,
-  }, nextNodeState.id)
+  }, preferNodeId)
 
   if (decision.nextAction === PROMPT_KINDS.RECALL) {
-    nextActiveNode = getAlternativeEligibleNode({
-      ...session,
-      graphNodes,
-    }, nextNodeState.id) || nextActiveNode
+    const altNode = getAlternativeEligibleNode({ ...session, graphNodes }, nextNodeState.id)
+    log('tutorNode:recallAlternative', { altNodeId: altNode?.id || null })
+    nextActiveNode = altNode || nextActiveNode
   }
 
   if (isMasteredNodeState(nextNodeState.status)) {
+    log('tutorNode:mastered, finding next node', { masteredNodeId: nextNodeState.id })
     nextActiveNode = getNextEligibleNode({
       ...session,
       graphNodes,
@@ -797,7 +1124,77 @@ const tutorNode = async (state) => {
   }
 
   const nextNode = nextActiveNode || nextNodeState
+  log('tutorNode:nextNode', {
+    nextNodeId: nextNode.id,
+    nextNodeTitle: nextNode.title,
+    nextNodeStatus: nextNode.status,
+    nextNodePromptKind: nextNode.promptKind,
+    previousNodeId: session.currentNodeId,
+    switched: nextNode.id !== session.currentNodeId,
+  })
   const recentMessages = formatRecentMessages(session.messages || [], nextNode.id)
+
+  if (nextNode.id !== previousNodeId) {
+    events.push(createEvent('node_entered', {
+      nodeId: nextNode.id,
+      enteredAt: new Date().toISOString(),
+      turnIndex: currentTurn,
+    }))
+  }
+
+  const lockedNodes = graphNodes.filter((n) => n.status === NODE_STATES.LOCKED)
+  for (const locked of lockedNodes) {
+    const parents = (locked.parentIds || []).map((pid) => graphNodes.find((n) => n.id === pid)).filter(Boolean)
+    const masteredParents = parents.filter((p) => isMasteredNodeState(p.status))
+    if (parents.length > 1 && masteredParents.length === parents.length - 1) {
+      const bottleneck = parents.find((p) => !isMasteredNodeState(p.status))
+      if (bottleneck) {
+        events.push(createEvent('dependency_bottleneck', {
+          blockedNodeId: locked.id,
+          bottleneckNodeId: bottleneck.id,
+        }))
+      }
+    }
+  }
+
+  let mcqData = null
+  if (decision.nextAction === PROMPT_KINDS.MCQ) {
+    try {
+      mcqData = await callStructuredPrompt({
+        systemPrompt: 'You are Forest Sprint 4 MCQ generator. Return strict JSON only.',
+        userPrompt: createMCQPrompt({ seedConcept, node: nextNode, latestAssessment }),
+        schema: MCQSchema,
+        model: MODEL_BY_CONTEXT.mcq_generate,
+      })
+    } catch { /* fall back to normal tutor message if MCQ generation fails */ }
+  }
+
+  let chainedQuestion = null
+  if (decision.nextAction === PROMPT_KINDS.CHAINED) {
+    const parentNodes = (nextNode.parentIds || []).map((pid) => graphNodes.find((n) => n.id === pid)).filter(Boolean)
+    if (parentNodes.length > 0) {
+      try {
+        chainedQuestion = await callTextPrompt({
+          systemPrompt: 'You generate a single integration question. Return only the question text.',
+          messages: [{ role: 'user', content: createChainedReasoningPrompt({ seedConcept, node: nextNode, parentNodes }) }],
+          model: MODEL_BY_CONTEXT.assessment,
+          temperature: 0.4,
+          maxCompletionTokens: 300,
+        })
+      } catch { /* fall back to normal tutor message */ }
+    }
+  }
+
+  const promptText = chainedQuestion || getNodePrompt(nextNode, nextNode.promptKind)
+  log('tutorNode:tutorPromptInput', {
+    decisionAction: decision.nextAction,
+    promptTextPreview: promptText.slice(0, 200),
+    hasMcq: !!mcqData,
+    hasChainedQuestion: !!chainedQuestion,
+    recentMessagesPreview: recentMessages.slice(0, 300),
+    nextNodeId: nextNode.id,
+    nextNodePromptKind: nextNode.promptKind,
+  })
 
   const tutorContent = await callTextPrompt({
     systemPrompt: createGuidedTutorPrompt({
@@ -806,17 +1203,20 @@ const tutorNode = async (state) => {
       decision,
       assessment: latestAssessment,
       recentMessages,
+      uploadedDocContext: getUploadedDocContext(session),
     }),
     messages: [{
       role: 'user',
       content: [
         `Decision action: ${decision.nextAction}`,
-        `Use this node prompt when appropriate: ${nextNode.promptPack?.[nextNode.promptKind] || nextNode.promptPack?.initial || nextNode.summary}`,
+        `Use this node prompt when appropriate: ${promptText}`,
         `If the learner just mastered a previous node, transition naturally into this next focus: ${nextNode.title}`,
-      ].join('\n'),
+        mcqData ? `Present this as a multiple choice question instead of open-ended. Question: ${mcqData.question}\nOptions:\nA) ${mcqData.correctAnswer}\n${mcqData.distractors.map((d, i) => `${String.fromCharCode(66 + i)}) ${d.text}`).join('\n')}` : '',
+      ].filter(Boolean).join('\n'),
     }],
     temperature: 0.45,
     maxCompletionTokens: 900,
+    model: MODEL_BY_CONTEXT.tutor,
   })
 
   const tutorMessage = createMessage({
@@ -826,11 +1226,27 @@ const tutorNode = async (state) => {
     metadata: {
       promptKind: nextNode.promptKind,
       fromDecision: decision.nextAction,
+      ...(mcqData ? { mcq: mcqData } : {}),
     },
   })
 
-  const rootNode = sortNodes(graphNodes)[graphNodes.length - 1]
-  const learningCompleted = !!rootNode && isMasteredNodeState(rootNode.status)
+  const allMastered = graphNodes.every((n) => isMasteredNodeState(n.status))
+  const learningCompleted = allMastered && graphNodes.length > 0
+
+  const metrics = { ...(session.metrics || createEmptyMetrics()) }
+  if (helpRequested || decision.nextAction === PROMPT_KINDS.TEACH) {
+    metrics.explanationRequestCount = (metrics.explanationRequestCount || 0) + 1
+  }
+  const nodeTs = metrics.nodeTimestamps || {}
+  if (nextNode.id !== previousNodeId) {
+    if (!nodeTs[nextNode.id]) nodeTs[nextNode.id] = {}
+    nodeTs[nextNode.id].enteredAt = nodeTs[nextNode.id].enteredAt || new Date().toISOString()
+  }
+  if (masteryState && currentNode.id) {
+    if (!nodeTs[currentNode.id]) nodeTs[currentNode.id] = {}
+    nodeTs[currentNode.id].completedAt = new Date().toISOString()
+  }
+  metrics.nodeTimestamps = nodeTs
 
   const updatedSession = {
     ...session,
@@ -850,12 +1266,24 @@ const tutorNode = async (state) => {
     phase: learningCompleted ? SPRINT4_PHASES.EVALUATION : session.phase,
     status: learningCompleted ? 'learning_complete' : session.status,
     learningCompletedAt: learningCompleted ? new Date().toISOString() : session.learningCompletedAt || null,
+    metrics,
     currentNodeSummary: {
       id: nextNode.id,
       title: nextNode.title,
       status: nextNode.status,
     },
   }
+
+  log('tutorNode:final', {
+    currentNodeId: updatedSession.currentNodeId,
+    phase: updatedSession.phase,
+    turnIndex: updatedSession.turnIndex,
+    learningCompleted,
+    messageCount: updatedSession.messages.length,
+    tutorMessagePreview: tutorMessage.content.slice(0, 200),
+    tutorMessageNodeId: tutorMessage.nodeId,
+    graphSummary: graphNodes.map((n) => ({ id: n.id, status: n.status, parentIds: n.parentIds })),
+  })
 
   return {
     tutorMessage,
@@ -885,223 +1313,79 @@ const buildTurnWorkflow = () => {
 
 const turnWorkflow = buildTurnWorkflow()
 
-const GRADIENT_DESCENT_CONFIG = {
-  conceptSummary: 'Gradient descent is an iterative optimization algorithm that adjusts model parameters in the direction opposite to the gradient of the loss function, scaled by a learning rate, to find parameter values that minimize prediction error.',
-  rootNodeId: 'gradient-descent-integration',
-  nodes: [
+const buildSeedNode = (seedConcept) => ({
+  id: slugify(seedConcept),
+  title: seedConcept,
+  summary: seedConcept,
+  initialPrompt: `Let's explore: ${seedConcept}. In your own words, explain what you understand about this topic so far.`,
+  parentIds: [],
+  isRoot: true,
+  rubric: null,
+  promptPack: null,
+})
+
+const DEFAULT_EVALUATION_BUNDLE = {
+  prompts: [
     {
-      id: 'loss-functions',
-      title: 'Loss Functions',
-      summary: 'A loss function quantifies the discrepancy between a model\'s predictions and the true target values, providing a single scalar that optimization seeks to minimize.',
-      parentIds: [],
-      isRoot: false,
-      rubric: {
-        explanationFocus: 'The learner should explain that a loss function maps predictions and ground truth to a non-negative scalar, and that lower values indicate better model fit.',
-        causalReasoningFocus: 'The learner should connect how changing predictions (via parameters) causally changes the loss value, creating the optimization landscape.',
-        transferFocus: 'The learner should be able to choose an appropriate loss function for a new task (e.g., MSE for regression vs cross-entropy for classification) and justify why.',
-        misconceptionTargets: [
-          'Believing loss can be negative under standard formulations like MSE or cross-entropy',
-          'Confusing the loss function with the accuracy metric and assuming they always move together',
-          'Thinking there is one universal loss function for all tasks',
-        ],
-        recallCue: 'What does a loss function measure and why do we minimize it?',
-      },
-      promptPack: {
-        initial: 'In your own words, what does a loss function do in machine learning, and why is minimizing it the central goal of training?',
-        teach: 'A loss function takes the model\'s predictions and the true labels and returns a number — the "loss." Think of MSE: it squares each prediction error and averages them. A loss of 0 means perfect predictions. Training is the process of searching for parameter values that push this number as low as possible.',
-        reassess: 'Suppose you switch from mean squared error to mean absolute error on the same dataset. How would that change what the optimizer is penalizing, and when might you prefer one over the other?',
-        transfer: 'You\'re building a spam classifier. Why would cross-entropy loss be a better choice than MSE here, and what does cross-entropy actually measure?',
-        recall: 'Without looking anything up, explain what a loss function computes and give one concrete example.',
-      },
+      id: 'explanation',
+      title: 'Explain the concept',
+      prompt: 'Explain, as if to a fellow student, the key ideas behind the concept you just studied. Cover the main mechanisms, why they work, and how the pieces fit together.',
     },
     {
-      id: 'derivatives-and-gradients',
-      title: 'Derivatives & Gradients',
-      summary: 'The derivative of a function at a point gives the slope (rate of change), and the gradient generalizes this to multiple dimensions, pointing in the direction of steepest ascent.',
-      parentIds: [],
-      isRoot: false,
-      rubric: {
-        explanationFocus: 'The learner should explain that a derivative tells you how fast and in which direction a function\'s output changes as you nudge the input, and that a gradient is the vector of partial derivatives.',
-        causalReasoningFocus: 'The learner should reason about why moving opposite to the gradient decreases the function value — because the gradient points uphill.',
-        transferFocus: 'The learner should apply gradient intuition to a new multivariable function and predict which direction reduces the output.',
-        misconceptionTargets: [
-          'Thinking the gradient points toward the minimum rather than toward the steepest ascent',
-          'Confusing the gradient (a vector) with the loss value (a scalar)',
-          'Believing you need to compute the derivative symbolically every time rather than numerically or via automatic differentiation',
-        ],
-        recallCue: 'What is a gradient, and which direction does it point relative to the function\'s minimum?',
-      },
-      promptPack: {
-        initial: 'Explain what a gradient is and why we move in the opposite direction of the gradient when we want to minimize a function.',
-        teach: 'Imagine you\'re standing on a hilly landscape in fog. The gradient at your feet is a compass arrow pointing directly uphill — the steepest climb. To go downhill fastest you walk the opposite way. In math, the gradient of f(w) is the vector of all partial derivatives ∂f/∂wᵢ. Each component says "if you increase wᵢ a tiny bit, f increases by this much." Negate the whole vector and you have the steepest descent direction.',
-        reassess: 'If the gradient of a loss function with respect to weights [w₁, w₂] is [4, -2], what does each component tell you about how to adjust w₁ and w₂ to reduce the loss?',
-        transfer: 'You have a function f(x, y) = x² + 3y². Compute the gradient at point (2, 1) and describe what step you would take to decrease f.',
-        recall: 'From memory, define gradient and explain why the negative gradient is the descent direction.',
-      },
+      id: 'transfer',
+      title: 'Apply to a new scenario',
+      prompt: 'Describe how you would apply what you learned to a new, related problem you haven\'t seen before. Be specific about which ideas transfer and how.',
     },
     {
-      id: 'learning-rate',
-      title: 'Learning Rate',
-      summary: 'The learning rate is a positive scalar that controls how large each parameter update step is; too large causes divergence, too small causes slow convergence.',
-      parentIds: ['derivatives-and-gradients'],
-      isRoot: false,
-      rubric: {
-        explanationFocus: 'The learner should explain that the learning rate scales the gradient step, balancing convergence speed against stability.',
-        causalReasoningFocus: 'The learner should reason about the causal chain: large learning rate → overshooting the minimum → oscillation or divergence; small learning rate → tiny steps → slow or stalled training.',
-        transferFocus: 'The learner should be able to diagnose a training curve (e.g., oscillating loss) and recommend adjusting the learning rate.',
-        misconceptionTargets: [
-          'Believing a larger learning rate always trains faster',
-          'Thinking the learning rate is learned automatically by vanilla gradient descent',
-          'Assuming a single fixed learning rate is always optimal throughout training',
-        ],
-        recallCue: 'What role does the learning rate play in the update step and what goes wrong at extremes?',
-      },
-      promptPack: {
-        initial: 'What is the learning rate in gradient descent, and what happens if it\'s set too high or too low?',
-        teach: 'The update rule is w ← w − α·∇L. The learning rate α is the step size multiplier. Picture a ball rolling downhill: α is how far it rolls each tick. If α is huge the ball leaps past the valley and bounces higher each time (divergence). If α is tiny, it barely moves and may never reach the bottom in practical time. A good α lands in a sweet spot — steady, shrinking loss each step.',
-        reassess: 'You\'re training a model and the loss oscillates wildly between epochs instead of decreasing. What is the most likely cause and how would you fix it?',
-        transfer: 'Many modern optimizers use a "learning rate schedule" that decreases α over time. Why might a high rate early and a low rate later be beneficial?',
-        recall: 'Explain from memory what the learning rate controls and the consequences of extreme values.',
-      },
-    },
-    {
-      id: 'gradient-update-rule',
-      title: 'The Gradient Descent Update Rule',
-      summary: 'The core update rule w ← w − α·∇L(w) iteratively adjusts each parameter in the direction that locally reduces the loss, combining the gradient and learning rate.',
-      parentIds: ['loss-functions', 'derivatives-and-gradients', 'learning-rate'],
-      isRoot: false,
-      rubric: {
-        explanationFocus: 'The learner should walk through the update formula component by component: current weights, minus the learning rate times the gradient of the loss with respect to those weights.',
-        causalReasoningFocus: 'The learner should explain why repeated application of this rule causes the loss to decrease over iterations — each step follows the steepest local descent.',
-        transferFocus: 'The learner should be able to manually compute one update step given concrete weight values, a gradient, and a learning rate.',
-        misconceptionTargets: [
-          'Forgetting the negative sign and moving in the gradient (ascent) direction',
-          'Believing one update step finds the global minimum',
-          'Thinking the update rule changes the loss function itself rather than the parameters',
-        ],
-        recallCue: 'Write out the gradient descent update rule and explain each term.',
-      },
-      promptPack: {
-        initial: 'Write out the gradient descent update rule and explain step by step what each part does and why the loss decreases after an update.',
-        teach: 'The rule is simple: w_new = w_old − α · ∇L(w_old). ∇L(w_old) is the gradient — it tells you the slope of the loss surface at your current position. Multiplying by α scales how far you step. The minus sign is crucial: the gradient points uphill, so subtracting it moves you downhill. Each iteration you recompute the gradient at the new position and step again. Over many iterations the parameters settle near a loss minimum.',
-        reassess: 'Given weights w = [3.0, -1.0], gradient ∇L = [0.5, -0.3], and learning rate α = 0.1, compute the updated weights and explain why the loss should be lower at the new point.',
-        transfer: 'Suppose you have two parameters but the gradient is [100, 0.01] — one component is vastly larger. What practical problem does this create for a single global learning rate, and how might you address it?',
-        recall: 'Without reference, write the update rule for gradient descent and explain the role of each symbol.',
-      },
-    },
-    {
-      id: 'convergence-and-local-minima',
-      title: 'Convergence & Local Minima',
-      summary: 'Gradient descent converges when parameter updates become negligibly small; in non-convex landscapes it may settle in a local minimum rather than the global one.',
-      parentIds: ['gradient-update-rule'],
-      isRoot: false,
-      rubric: {
-        explanationFocus: 'The learner should explain convergence as the gradient approaching zero (flat region) and distinguish local minima, global minima, and saddle points.',
-        causalReasoningFocus: 'The learner should reason about why non-convex loss surfaces cause gradient descent to potentially stop at suboptimal points, and what factors influence which minimum is found.',
-        transferFocus: 'The learner should apply convergence reasoning to diagnose a training curve that has plateaued and suggest strategies (restarts, momentum, learning rate schedules).',
-        misconceptionTargets: [
-          'Believing gradient descent always finds the global minimum',
-          'Thinking a zero gradient always means a minimum (ignoring saddle points)',
-          'Assuming local minima are always catastrophically worse than the global minimum in deep networks',
-        ],
-        recallCue: 'What does it mean for gradient descent to converge, and what can go wrong in non-convex landscapes?',
-      },
-      promptPack: {
-        initial: 'What does it mean for gradient descent to "converge," and why might it end up at a local minimum instead of the global minimum?',
-        teach: 'Convergence means the updates get smaller and smaller because the gradient approaches zero — you\'ve reached a relatively flat spot. In a simple bowl-shaped (convex) loss, that flat spot is the global minimum. But real neural network losses are bumpy (non-convex) with many valleys. Gradient descent rolls into whichever valley it reaches first from its starting point. That valley might not be the deepest one. Techniques like random restarts, momentum, or adaptive learning rates help escape shallow valleys.',
-        reassess: 'Your model\'s training loss decreased quickly then stopped improving, but the loss is still high. Is this necessarily a local minimum? What else could explain the plateau, and what would you try?',
-        transfer: 'Two teams train the same architecture on the same data but get different final losses. What role does random initialization play, and how does this relate to local minima?',
-        recall: 'Explain convergence in gradient descent and the difference between local and global minima.',
-      },
-    },
-    {
-      id: 'stochastic-gradient-descent',
-      title: 'Stochastic & Mini-Batch Gradient Descent',
-      summary: 'SGD approximates the true gradient using a single sample or small batch, trading per-step accuracy for speed and introducing noise that can help escape local minima.',
-      parentIds: ['gradient-update-rule'],
-      isRoot: false,
-      rubric: {
-        explanationFocus: 'The learner should contrast full-batch gradient descent (using all data) with SGD (one sample) and mini-batch (a subset), explaining the noise-speed tradeoff.',
-        causalReasoningFocus: 'The learner should reason about why noisier gradient estimates can paradoxically help optimization by bouncing out of shallow local minima.',
-        transferFocus: 'The learner should be able to recommend a batch size given constraints (memory, dataset size, convergence behavior) and explain the tradeoffs.',
-        misconceptionTargets: [
-          'Thinking SGD computes the exact gradient — it computes a noisy estimate',
-          'Believing larger batches are always better for final model quality',
-          'Confusing "epoch" with "iteration" in the context of SGD',
-        ],
-        recallCue: 'How does stochastic gradient descent differ from full-batch, and what is the benefit of the noise it introduces?',
-      },
-      promptPack: {
-        initial: 'How does stochastic gradient descent (SGD) differ from standard (full-batch) gradient descent, and why is SGD used in practice despite its noisier updates?',
-        teach: 'Full-batch GD computes the gradient over every training example — accurate but slow for large datasets. SGD picks just one random example (or a small mini-batch) and estimates the gradient from that. The estimate is noisier but much cheaper. Surprisingly, that noise is useful: it helps the optimizer bounce out of shallow local minima and sharp valleys, often finding flatter minima that generalize better. Mini-batch (e.g., 32 or 64 examples) is the practical sweet spot — more stable than single-sample SGD, far faster than full-batch.',
-        reassess: 'If you increase the mini-batch size from 32 to 1024, what happens to the variance of gradient estimates and the training dynamics? Are there downsides?',
-        transfer: 'You have a dataset of 10 million images and a GPU with 16 GB of memory. Why is full-batch gradient descent infeasible, and how would you choose a mini-batch size?',
-        recall: 'Describe the difference between full-batch, mini-batch, and stochastic gradient descent and the noise tradeoff.',
-      },
-    },
-    {
-      id: 'gradient-descent-integration',
-      title: 'How Gradient Descent Minimizes Loss',
-      summary: 'Gradient descent minimizes loss by iteratively computing the gradient of the loss with respect to model parameters and taking scaled steps in the negative gradient direction, converging toward a minimum of the loss surface.',
-      parentIds: ['convergence-and-local-minima', 'stochastic-gradient-descent'],
-      isRoot: true,
-      rubric: {
-        explanationFocus: 'The learner should synthesize the full pipeline: loss function defines the objective, gradient gives direction, learning rate gives step size, the update rule ties them together, and iteration leads to convergence.',
-        causalReasoningFocus: 'The learner should trace the complete causal chain from "model makes bad predictions" through "loss is high" → "gradient points uphill" → "negative gradient step reduces loss" → "repeated steps converge near minimum."',
-        transferFocus: 'The learner should be able to explain gradient descent\'s role in training a new model architecture they haven\'t seen before, identifying where each concept applies.',
-        misconceptionTargets: [
-          'Believing gradient descent directly finds the best parameters in one step rather than iterating',
-          'Thinking gradient descent only works for neural networks (it works for any differentiable loss)',
-          'Confusing the optimization process (gradient descent) with the model architecture',
-        ],
-        recallCue: 'Walk through the full story of how gradient descent minimizes loss, from the loss function through convergence.',
-      },
-      promptPack: {
-        initial: 'Put it all together: starting from a randomly initialized model, explain the complete process of how gradient descent minimizes the loss function step by step, from the first forward pass to convergence.',
-        teach: 'Here\'s the full picture: (1) The model makes predictions with its current parameters. (2) The loss function measures how wrong those predictions are. (3) We compute the gradient — partial derivatives of the loss with respect to every parameter — telling us the direction of steepest increase. (4) We update each parameter by subtracting the learning rate times its gradient component. (5) We repeat with new data (SGD) or the same data (batch). Each iteration the loss generally drops. (6) Eventually the gradient shrinks toward zero and we converge near a minimum. The choice of loss function, learning rate, and batch strategy all shape how quickly and how well this process works.',
-        reassess: 'A colleague says "gradient descent just follows the slope downhill until the loss is zero." What parts of this are correct and what important nuances are missing?',
-        transfer: 'You\'re training a logistic regression model (not a neural network) on tabular data. Does gradient descent still apply? Walk through how each concept — loss, gradient, learning rate, convergence — maps onto this simpler setting.',
-        recall: 'From memory, explain the complete end-to-end process of how gradient descent minimizes loss in machine learning.',
-      },
+      id: 'misconception',
+      title: 'Identify a misconception',
+      prompt: 'What is a common misunderstanding someone might have about this topic? Explain why it\'s wrong and what the correct understanding is.',
     },
   ],
-  evaluationBundle: {
-    prompts: [
-      {
-        id: 'explanation',
-        title: 'Explain the gradient descent process',
-        prompt: 'Explain, as if to a fellow student, how gradient descent works to minimize a loss function in machine learning. Cover the role of the loss function, the gradient, the learning rate, and the update rule. What does one iteration look like, and what does convergence mean?',
-      },
-      {
-        id: 'transfer',
-        title: 'Apply gradient descent to a new scenario',
-        prompt: 'You are given a simple linear regression model y = wx + b and a dataset of 100 points. You choose mean squared error as your loss. Describe concretely how you would use gradient descent to find good values of w and b. What would you compute at each step, and how would you know when to stop?',
-      },
-      {
-        id: 'misconception',
-        title: 'Identify and correct a misconception',
-        prompt: 'A student claims: "Gradient descent always finds the best possible parameters for any model because it follows the gradient directly to the global minimum, and using a bigger learning rate makes it get there faster." Identify the misconceptions in this statement and explain what actually happens.',
-      },
-    ],
-    scoringNotes: [
-      'Award full marks for explanation if the learner accurately describes the iterative cycle: forward pass → loss computation → gradient computation → parameter update → repeat.',
-      'For transfer, check that the learner correctly identifies ∂L/∂w and ∂L/∂b as the needed gradients and describes updating both parameters each step.',
-      'For misconception, the learner should identify at least two errors: (1) GD does not guarantee the global minimum in non-convex landscapes, and (2) a learning rate that is too large causes divergence, not faster convergence.',
-      'Partial credit if the core idea is present but details (like the negative sign, or local vs global minima) are imprecise.',
-    ],
-  },
+  scoringNotes: [
+    'Award full marks for explanation if the learner accurately describes the core mechanisms and how they relate.',
+    'For transfer, check that the learner correctly identifies which concepts apply and describes a concrete application.',
+    'For misconception, the learner should identify a plausible wrong belief and clearly explain the correct alternative.',
+  ],
 }
 
 export const generateStudyArtifacts = async (seedConcept) => {
-  const graphNodes = normalizePlannerNodes(GRADIENT_DESCENT_CONFIG)
-  const rootNode = graphNodes.find((node) => node.id === slugify(GRADIENT_DESCENT_CONFIG.rootNodeId)) || graphNodes[graphNodes.length - 1]
+  const trimmed = `${seedConcept || ''}`.trim() || BUILTIN_SEED_CONCEPT
+  const seedNode = buildSeedNode(trimmed)
+  const graphNodes = [addRuntimeFields({ ...seedNode, orderIndex: 0, depth: 0 })]
 
   return {
-    seedConcept,
-    conceptSummary: GRADIENT_DESCENT_CONFIG.conceptSummary,
-    rootNodeId: rootNode.id,
+    seedConcept: trimmed,
+    conceptSummary: trimmed,
+    rootNodeId: seedNode.id,
     graphNodes,
-    evaluationBundle: GRADIENT_DESCENT_CONFIG.evaluationBundle,
+    evaluationBundle: DEFAULT_EVALUATION_BUNDLE,
+  }
+}
+
+export const getBuiltinStudyConfigRecord = () => {
+  const artifacts = (() => {
+    const seedNode = buildSeedNode(BUILTIN_SEED_CONCEPT)
+    const graphNodes = [addRuntimeFields({ ...seedNode, orderIndex: 0, depth: 0 })]
+    return {
+      seedConcept: BUILTIN_SEED_CONCEPT,
+      conceptSummary: BUILTIN_SEED_CONCEPT,
+      rootNodeId: seedNode.id,
+      graphNodes,
+      evaluationBundle: DEFAULT_EVALUATION_BUNDLE,
+    }
+  })()
+
+  const now = new Date().toISOString()
+  return {
+    id: BUILTIN_STUDY_ID,
+    seedConcept: artifacts.seedConcept,
+    conceptSummary: artifacts.conceptSummary,
+    timeBudgetMs: DEFAULT_TIME_BUDGET_MS,
+    graphNodes: artifacts.graphNodes,
+    evaluationBundle: artifacts.evaluationBundle,
+    createdAt: now,
+    updatedAt: now,
   }
 }
 
@@ -1118,23 +1402,20 @@ export const createInitialSessionSnapshot = ({ studyConfigId, studyConfig, condi
     id: '',
     studyConfigId,
     condition,
-    phase: SPRINT4_PHASES.LEARNING,
+    phase: SPRINT4_PHASES.SELF_REPORT,
     status: 'active',
     currentNodeId: firstNode?.id || '',
     turnIndex: 0,
     graphNodes,
     evidenceRecords: [],
-    messages: firstNode ? [createMessage({
-      role: 'assistant',
-      content: condition === SPRINT4_CONDITIONS.GUIDED
-        ? `We’ll build toward **${studyConfig.seedConcept}** through a live concept map. Let’s start with **${firstNode.title}**.\n\n${firstNode.promptPack.initial}`
-        : `You have a fixed study window to learn **${studyConfig.seedConcept}**. Ask whatever you want and use the conversation however you like.`,
-      nodeId: firstNode.id,
-    })] : [],
+    messages: [],
     events: [createEvent('session_started', { condition })],
     evaluationAnswers: [],
     evaluationScores: [],
     surveyResponse: null,
+    selfReport: null,
+    uploadedDocuments: [],
+    metrics: createEmptyMetrics(),
     learningCompletedAt: null,
     evaluationCompletedAt: null,
     surveyCompletedAt: null,
@@ -1143,11 +1424,36 @@ export const createInitialSessionSnapshot = ({ studyConfigId, studyConfig, condi
   }
 }
 
+export const buildInitialLearningMessages = ({ studyConfig, firstNode, condition }) => {
+  if (!firstNode) return []
+  const prompt = getNodePrompt(firstNode, PROMPT_KINDS.ASSESS)
+  return [createMessage({
+    role: 'assistant',
+    content: condition === SPRINT4_CONDITIONS.GUIDED
+      ? `We'll explore **${studyConfig.seedConcept}** together through a live concept map.\n\n${prompt}`
+      : `You have a fixed study window to learn **${studyConfig.seedConcept}**. Ask whatever you want and use the conversation however you like.`,
+    nodeId: firstNode.id,
+  })]
+}
+
 export const runGuidedTurn = async ({ session, studyConfig, userMessage, helpRequested }) => {
+  log('runGuidedTurn:start', {
+    currentNodeId: session.currentNodeId,
+    turnIndex: session.turnIndex,
+    phase: session.phase,
+    nodeCount: (session.graphNodes || []).length,
+    messageCount: (session.messages || []).length,
+    evidenceCount: (session.evidenceRecords || []).length,
+    userMessagePreview: (userMessage || '').slice(0, 120),
+    helpRequested,
+    allNodes: (session.graphNodes || []).map((n) => ({ id: n.id, status: n.status, parentIds: n.parentIds })),
+  })
+
   const activeNode = session.graphNodes.find((node) => node.id === session.currentNodeId) ||
     getNextEligibleNode(session)
 
   if (!activeNode) {
+    log('runGuidedTurn:noActiveNode', 'No eligible node found, transitioning to evaluation')
     return {
       session: {
         ...session,
@@ -1161,6 +1467,16 @@ export const runGuidedTurn = async ({ session, studyConfig, userMessage, helpReq
     }
   }
 
+  log('runGuidedTurn:activeNode', {
+    id: activeNode.id,
+    title: activeNode.title,
+    status: activeNode.status,
+    promptKind: activeNode.promptKind,
+    parentIds: activeNode.parentIds,
+    attempts: activeNode.attempts,
+    bestScores: activeNode.bestScores,
+  })
+
   const result = await turnWorkflow.invoke({
     seedConcept: studyConfig.seedConcept,
     session: {
@@ -1170,6 +1486,16 @@ export const runGuidedTurn = async ({ session, studyConfig, userMessage, helpReq
     activeNode,
     userMessage,
     helpRequested,
+  })
+
+  log('runGuidedTurn:complete', {
+    newCurrentNodeId: result.updatedSession.currentNodeId,
+    newTurnIndex: result.updatedSession.turnIndex,
+    newPhase: result.updatedSession.phase,
+    newNodeCount: (result.updatedSession.graphNodes || []).length,
+    newAllNodes: (result.updatedSession.graphNodes || []).map((n) => ({ id: n.id, status: n.status, parentIds: n.parentIds })),
+    tutorMessageNodeId: result.tutorMessage.nodeId,
+    tutorMessagePreview: result.tutorMessage.content.slice(0, 150),
   })
 
   return {
@@ -1192,6 +1518,7 @@ export const runControlTurn = async ({ session, studyConfig, userMessage }) => {
     })),
     temperature: 0.55,
     maxCompletionTokens: 1000,
+    model: MODEL_BY_CONTEXT.tutor,
   })
   const assistantMessage = createMessage({
     role: 'assistant',
@@ -1225,7 +1552,10 @@ export const scoreEvaluationAnswers = async ({ studyConfig, answers }) => {
     }),
     schema: EvaluationScoreSchema,
     maxCompletionTokens: 2600,
+    model: MODEL_BY_CONTEXT.evaluation_score,
   })
 
   return evaluationScores
 }
+
+export { markDependentAvailability, getNextEligibleNode }

@@ -5,7 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:all": "bash scripts/dev-all.sh",
     "sprint4:server": "node server/sprint4Server.js",
+    "sprint4:server:run": "bash scripts/sprint4-server.sh",
+    "sprint4:logs": "mkdir -p logs && touch logs/sprint4-server.log && tail -f logs/sprint4-server.log",
     "build": "vite build",
     "preview": "vite preview"
   },

@@ -7,26 +7,37 @@ import {
   CheckCircle2,
   Clock3,
   Loader,
+  Mic,
+  Pause,
+  Play,
   Send,
+  SkipForward,
   Sparkles,
-  TreePine,
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import DynamicConceptMap from '../components/sprint4/DynamicConceptMap'
+import MicButton from '../components/sprint4/MicButton'
+import SkipNodeModal from '../components/sprint4/SkipNodeModal'
+import DocUpload from '../components/sprint4/DocUpload'
+import MCQPrompt from '../components/sprint4/MCQPrompt'
 import Button from '../components/Button'
 import Logo from '../components/Logo'
+import { useTabVisibility } from '../hooks/useTabVisibility'
 import {
   advancePhase,
   getActiveNode,
   getGuidedProgress,
   getTimeRemainingMs,
+  skipNode,
   startSession,
   submitEvaluation,
+  submitSelfReport,
   submitSurvey,
   submitTurn,
+  trackEvents,
 } from '../lib/mvpV2Service'
-import { SPRINT4_CONDITIONS, SPRINT4_PHASES, NODE_STATES } from '../lib/sprint4/constants'
+import { BUILTIN_STUDY_ID, SPRINT4_CONDITIONS, SPRINT4_PHASES, NODE_STATES, PROMPT_KINDS } from '../lib/sprint4/constants'
 
 const formatDuration = (ms) => {
   if (!Number.isFinite(ms) || ms <= 0) return '0:00'
@@ -45,6 +56,7 @@ const SURVEY_FIELDS = [
 const statusLabel = (status) => {
   if (status === NODE_STATES.MASTERED_INDEPENDENTLY) return 'Mastered'
   if (status === NODE_STATES.MASTERED_WITH_SUPPORT) return 'Mastered (supported)'
+  if (status === NODE_STATES.SKIPPED) return 'Skipped'
   if (status === NODE_STATES.PARTIAL) return 'Partial'
   if (status === NODE_STATES.ACTIVE) return 'Active'
   return 'Locked'
@@ -52,7 +64,9 @@ const statusLabel = (status) => {
 
 const MVPV2 = () => {
   const [searchParams] = useSearchParams()
-  const studyConfigId = searchParams.get('study') || ''
+  const studyConfigId = searchParams.get('study')?.trim() || BUILTIN_STUDY_ID
+  const forceCondition = searchParams.get('condition')?.trim() || ''
+  const forceNew = searchParams.get('new') === '1'
   const [booting, setBooting] = useState(true)
   const [sessionToken, setSessionToken] = useState('')
   const [snapshot, setSnapshot] = useState(null)
@@ -62,6 +76,12 @@ const MVPV2 = () => {
   const [timeRemainingMs, setTimeRemainingMs] = useState(0)
   const [evaluationAnswers, setEvaluationAnswers] = useState({})
   const [survey, setSurvey] = useState({ clarity: '', confidence: '', usefulness: '', comment: '' })
+  const [skipModalNode, setSkipModalNode] = useState(null)
+  const [paused, setPaused] = useState(false)
+  const pausedAtRef = useRef(null)
+  const [selfReportRating, setSelfReportRating] = useState(0)
+  const [selfReportText, setSelfReportText] = useState('')
+  const [speechUsedForCurrent, setSpeechUsedForCurrent] = useState(false)
 
   const snapshotRef = useRef(snapshot)
   snapshotRef.current = snapshot
@@ -69,12 +89,14 @@ const MVPV2 = () => {
   sessionTokenRef.current = sessionToken
   const chatScrollRef = useRef(null)
 
+  const { flushEvents } = useTabVisibility()
+
   useEffect(() => {
     let cancelled = false
     const bootstrap = async () => {
       if (!studyConfigId) { setBooting(false); return }
       try {
-        const started = await startSession({ studyConfigId })
+        const started = await startSession({ studyConfigId, forceCondition, forceNew })
         if (cancelled) return
         setSessionToken(started.sessionToken)
         setSnapshot(started.snapshot)
@@ -91,6 +113,24 @@ const MVPV2 = () => {
 
   useEffect(() => {
     if (!snapshot?.session || snapshot.session.phase !== SPRINT4_PHASES.LEARNING) return undefined
+    if (paused) {
+      if (!pausedAtRef.current) pausedAtRef.current = Date.now()
+      return undefined
+    }
+    if (pausedAtRef.current) {
+      const pausedFor = Date.now() - pausedAtRef.current
+      pausedAtRef.current = null
+      setSnapshot((prev) => {
+        if (!prev?.session?.startedAt) return prev
+        return {
+          ...prev,
+          session: {
+            ...prev.session,
+            startedAt: new Date(new Date(prev.session.startedAt).getTime() + pausedFor).toISOString(),
+          },
+        }
+      })
+    }
     setTimeRemainingMs(getTimeRemainingMs(snapshot.session))
     const timer = window.setInterval(() => {
       const current = snapshotRef.current
@@ -98,7 +138,7 @@ const MVPV2 = () => {
       setTimeRemainingMs(getTimeRemainingMs(current.session))
     }, 1000)
     return () => window.clearInterval(timer)
-  }, [snapshot?.session?.id, snapshot?.session?.phase])
+  }, [snapshot?.session?.id, snapshot?.session?.phase, paused])
 
   useEffect(() => {
     const token = sessionTokenRef.current
@@ -116,10 +156,19 @@ const MVPV2 = () => {
   }, [timeRemainingMs])
 
   useEffect(() => {
-    if (chatScrollRef.current) {
-      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight
-    }
+    if (chatScrollRef.current) chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight
   }, [snapshot?.session?.messages?.length])
+
+  useEffect(() => {
+    if (!sessionToken || !snapshot?.session || snapshot.session.phase !== SPRINT4_PHASES.LEARNING) return undefined
+    const interval = window.setInterval(() => {
+      const events = flushEvents()
+      if (events.length > 0) {
+        trackEvents({ token: sessionToken, events }).catch(() => {})
+      }
+    }, 30000)
+    return () => window.clearInterval(interval)
+  }, [sessionToken, snapshot?.session?.phase, flushEvents])
 
   const isGuided = snapshot?.session?.condition === SPRINT4_CONDITIONS.GUIDED
   const activeNode = useMemo(() => getActiveNode(snapshot), [snapshot])
@@ -135,20 +184,25 @@ const MVPV2 = () => {
   const evaluationScores = snapshot?.session?.evaluationScores || []
   const evaluationSummary = snapshot?.session?.evaluationSummary || ''
 
-  const handleSubmitTurn = async (helpRequested = false) => {
+  const isSpeechEncouraged = isGuided && activeNode && activeNode.promptKind === PROMPT_KINDS.ASSESS && (activeNode.attempts || 0) === 0
+
+  const handleSubmitTurn = async (helpRequested = false, overrideMessage) => {
+    const message = overrideMessage ?? input
     if (!sessionToken || !snapshot?.session || loading) return
-    if (!helpRequested && !input.trim()) return
+    if (!helpRequested && !message.trim()) return
     setLoading(true)
     setPageError('')
     try {
       const result = await submitTurn({
         token: sessionToken,
         activeNodeId: activeNode?.id || snapshot.session.currentNodeId,
-        userMessage: input.trim(),
+        userMessage: message.trim(),
         helpRequested,
+        metadata: { speechBased: speechUsedForCurrent },
       })
       setSnapshot(result.snapshot)
       setInput('')
+      setSpeechUsedForCurrent(false)
       setTimeRemainingMs(result.timeRemainingMs)
     } catch (error) {
       setPageError(error.message)
@@ -165,6 +219,46 @@ const MVPV2 = () => {
       ...prev,
       session: { ...prev.session, currentNodeId: nodeId },
     }))
+  }
+
+  const handleMCQAnswer = (selection) => {
+    const answerText = selection.isCorrect
+      ? `I selected: "${selection.selectedText}" (correct)`
+      : `I selected: "${selection.selectedText}" — I thought this was right but I see it's related to the misconception: ${selection.misconceptionLabel || 'unknown'}`
+    void handleSubmitTurn(false, answerText)
+  }
+
+  const handleSkipConfirm = async (reason) => {
+    if (!sessionToken || !skipModalNode) return
+    setPageError('')
+    try {
+      const result = await skipNode({ token: sessionToken, nodeId: skipModalNode.id, reason })
+      setSnapshot(result.snapshot)
+    } catch (error) {
+      setPageError(error.message)
+    }
+    setSkipModalNode(null)
+  }
+
+  const handleTranscript = (text) => {
+    if (text) {
+      setInput((prev) => (prev ? `${prev} ${text}` : text))
+      setSpeechUsedForCurrent(true)
+    }
+  }
+
+  const handleSubmitSelfReport = async () => {
+    if (!sessionToken || !selfReportRating) return
+    setLoading(true)
+    setPageError('')
+    try {
+      const result = await submitSelfReport({ token: sessionToken, rating: selfReportRating, text: selfReportText })
+      setSnapshot(result.snapshot)
+    } catch (error) {
+      setPageError(error.message)
+    } finally {
+      setLoading(false)
+    }
   }
 
   const handleSubmitEvaluation = async (event) => {
@@ -211,29 +305,82 @@ const MVPV2 = () => {
     )
   }
 
-  if (!studyConfigId) {
+  if (snapshot?.session?.phase === SPRINT4_PHASES.SELF_REPORT) {
     return (
-      <div className="relative w-full h-screen overflow-hidden bg-forest-darker flex items-center justify-center">
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="max-w-lg text-center px-6">
-          <div className="w-16 h-16 mx-auto mb-6 rounded-full bg-forest-card border-2 border-forest-emerald/40 flex items-center justify-center">
-            <TreePine size={32} className="text-forest-emerald" />
+      <div className="relative w-full h-screen overflow-hidden bg-forest-darker">
+        <div className="h-full overflow-y-auto">
+          <div className="mx-auto max-w-2xl px-5 pb-14 pt-8">
+            <div className="flex items-center gap-3 mb-8">
+              <Logo variant="full" />
+              <span className="text-[10px] uppercase tracking-[0.25em] text-forest-gray">Sprint 4</span>
+            </div>
+
+            <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}>
+              <div className="rounded-xl border border-forest-border bg-forest-card/40 p-6">
+                <p className="text-[10px] uppercase tracking-[0.25em] text-forest-emerald font-semibold">Before we begin</p>
+                <h1 className="mt-3 text-2xl font-semibold text-white">Self-assessment</h1>
+                <p className="mt-3 text-sm text-forest-light-gray">
+                  You'll be studying: <span className="font-medium text-white">{snapshot.studyConfig?.seedConcept}</span>
+                </p>
+
+                <div className="mt-6">
+                  <p className="text-sm text-white mb-3">How well do you understand this concept right now?</p>
+                  <div className="flex gap-2">
+                    {[1, 2, 3, 4, 5].map((value) => (
+                      <button
+                        key={value}
+                        type="button"
+                        onClick={() => setSelfReportRating(value)}
+                        className={`rounded-lg border px-5 py-2.5 text-sm transition ${
+                          selfReportRating === value
+                            ? 'border-forest-emerald/60 bg-forest-emerald/15 text-white'
+                            : 'border-forest-border bg-forest-card/50 text-forest-light-gray hover:border-forest-emerald/30'
+                        }`}
+                      >
+                        {value}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex justify-between text-[10px] text-forest-gray mt-1.5 px-1">
+                    <span>No idea</span>
+                    <span>Expert</span>
+                  </div>
+                </div>
+
+                <div className="mt-5">
+                  <p className="text-sm text-white mb-2">Briefly describe what you already know (optional)</p>
+                  <textarea
+                    value={selfReportText}
+                    onChange={(e) => setSelfReportText(e.target.value)}
+                    rows={3}
+                    className="w-full rounded-xl border border-forest-border bg-forest-darker/60 px-4 py-3 text-sm text-white outline-none transition focus:border-forest-emerald"
+                    placeholder="I know that..."
+                  />
+                </div>
+
+                <div className="mt-6">
+                  <Button onClick={handleSubmitSelfReport} disabled={!selfReportRating || loading}>
+                    <span className="flex items-center gap-2">
+                      {loading ? <Loader size={16} className="animate-spin" /> : <ArrowRight size={16} />}
+                      Begin learning
+                    </span>
+                  </Button>
+                </div>
+              </div>
+            </motion.div>
           </div>
-          <h1 className="text-2xl font-semibold text-white mb-2">Study link required</h1>
-          <p className="text-forest-light-gray mb-8">
-            This controlled prototype starts from a researcher-created study config. Open the participant link from the admin page.
-          </p>
-          <Link to="/mvp-v2-admin">
-            <Button type="button">Open Sprint 4 Admin</Button>
-          </Link>
-        </motion.div>
+        </div>
+        {pageError && <ErrorToast message={pageError} onDismiss={() => setPageError('')} />}
       </div>
     )
   }
 
   if (snapshot?.session?.phase === SPRINT4_PHASES.LEARNING) {
+    const lastMessage = visibleMessages[visibleMessages.length - 1]
+    const mcqData = lastMessage?.metadata?.mcq
+
     return (
       <div className="relative w-full h-screen overflow-hidden bg-forest-darker flex flex-col">
-        {/* Top bar */}
         <div className="flex-shrink-0 h-12 border-b border-forest-border bg-forest-card/50 flex items-center justify-between px-4 z-20">
           <div className="flex items-center gap-3">
             <Link to="/" className="flex items-center gap-2">
@@ -249,13 +396,28 @@ const MVPV2 = () => {
               </span>
             )}
             <span className={`rounded-lg border px-3 py-1 text-xs font-medium flex items-center gap-1.5 ${
-              timeRemainingMs < 60000
-                ? 'border-red-500/50 bg-red-500/10 text-red-300'
-                : 'border-forest-border bg-forest-card text-forest-light-gray'
+              paused
+                ? 'border-yellow-500/50 bg-yellow-500/10 text-yellow-300'
+                : timeRemainingMs < 60000
+                  ? 'border-red-500/50 bg-red-500/10 text-red-300'
+                  : 'border-forest-border bg-forest-card text-forest-light-gray'
             }`}>
               <Clock3 size={13} />
-              {formatDuration(timeRemainingMs)}
+              {paused ? 'Paused' : formatDuration(timeRemainingMs)}
             </span>
+            <button
+              type="button"
+              onClick={() => setPaused((p) => !p)}
+              className={`px-2 py-1 rounded-lg text-xs border transition-colors flex items-center gap-1 ${
+                paused
+                  ? 'border-forest-emerald/50 text-forest-emerald hover:bg-forest-emerald/10'
+                  : 'border-forest-border text-forest-light-gray hover:text-yellow-300 hover:border-yellow-500/50'
+              }`}
+              title={paused ? 'Resume timer' : 'Pause timer'}
+            >
+              {paused ? <Play size={12} /> : <Pause size={12} />}
+              {paused ? 'Resume' : 'Pause'}
+            </button>
             <button
               type="button"
               onClick={() => advancePhase({ token: sessionToken, phase: SPRINT4_PHASES.EVALUATION })
@@ -268,9 +430,7 @@ const MVPV2 = () => {
           </div>
         </div>
 
-        {/* Main content */}
         <div className={`flex-1 min-h-0 flex ${isGuided ? 'flex-col lg:flex-row' : 'flex-col'}`}>
-          {/* Concept map (guided only) */}
           {isGuided && (
             <div className="lg:w-[48%] xl:w-[45%] h-[40vh] lg:h-full border-b lg:border-b-0 lg:border-r border-forest-border">
               <DynamicConceptMap
@@ -281,32 +441,45 @@ const MVPV2 = () => {
             </div>
           )}
 
-          {/* Chat panel */}
           <div className="flex-1 min-h-0 flex flex-col">
-            {/* Active node header (guided only) */}
-            {isGuided && activeNode && (
-              <div className="flex-shrink-0 border-b border-forest-border bg-forest-card/30 px-4 py-3">
-                <div className="flex items-center justify-between gap-4">
-                  <div className="min-w-0">
-                    <p className="text-[10px] uppercase tracking-[0.2em] text-forest-emerald font-semibold">Active Focus</p>
-                    <h2 className="text-lg font-semibold text-white truncate mt-0.5">{activeNode.title}</h2>
-                  </div>
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    <span className="rounded-md bg-forest-card border border-forest-border px-2 py-0.5 text-[11px] text-forest-light-gray">
+            {isGuided && activeNode && (() => {
+              const bs = activeNode.bestScores || {}
+              const dims = [
+                { key: 'Expl', val: bs.explanation || 0, goal: 2 },
+                { key: 'Causal', val: bs.causalReasoning || 0, goal: 2 },
+                { key: 'Transfer', val: bs.transfer || 0, goal: 1 },
+                { key: 'Recall', val: activeNode.successfulRecallCount || 0, goal: 1 },
+              ]
+              return (
+                <div className="flex-shrink-0 border-b border-forest-border bg-forest-card/30 px-4 py-3">
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="min-w-0">
+                      <p className="text-[10px] uppercase tracking-[0.2em] text-forest-emerald font-semibold">Active Focus</p>
+                      <h2 className="text-lg font-semibold text-white truncate mt-0.5">{activeNode.title}</h2>
+                    </div>
+                    <span className="rounded-md bg-forest-card border border-forest-border px-2 py-0.5 text-[11px] text-forest-light-gray flex-shrink-0">
                       {statusLabel(activeNode.status)}
                     </span>
-                    <span className="rounded-md bg-forest-card border border-forest-border px-2 py-0.5 text-[11px] text-forest-light-gray">
-                      Recall {activeNode.successfulRecallCount || 0}/2
-                    </span>
                   </div>
+                  <div className="flex items-center gap-3 mt-2">
+                    {dims.map((d) => (
+                      <div key={d.key} className="flex items-center gap-1.5">
+                        <span className="text-[10px] text-forest-gray">{d.key}</span>
+                        <span className={`text-[11px] font-medium tabular-nums ${
+                          d.val >= d.goal ? 'text-forest-emerald' : 'text-forest-light-gray'
+                        }`}>
+                          {d.val}/{d.goal}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  {activeNode.summary && (
+                    <p className="text-xs text-forest-gray mt-1.5 line-clamp-2">{activeNode.summary}</p>
+                  )}
                 </div>
-                {activeNode.summary && (
-                  <p className="text-xs text-forest-gray mt-1.5 line-clamp-2">{activeNode.summary}</p>
-                )}
-              </div>
-            )}
+              )
+            })()}
 
-            {/* Control arm header */}
             {!isGuided && (
               <div className="flex-shrink-0 border-b border-forest-border bg-forest-card/30 px-4 py-3">
                 <p className="text-[10px] uppercase tracking-[0.2em] text-forest-emerald font-semibold">Free-form Learning</p>
@@ -314,7 +487,15 @@ const MVPV2 = () => {
               </div>
             )}
 
-            {/* Messages */}
+            {isSpeechEncouraged && (
+              <div className="flex-shrink-0 bg-forest-emerald/5 border-b border-forest-emerald/20 px-4 py-2.5 flex items-center gap-2">
+                <Mic size={14} className="text-forest-emerald animate-pulse" />
+                <p className="text-xs text-forest-emerald">
+                  Try explaining this concept in your own words using the microphone — speaking helps you think!
+                </p>
+              </div>
+            )}
+
             <div ref={chatScrollRef} className="flex-1 overflow-y-auto min-h-0">
               <div className="p-4 space-y-3">
                 {visibleMessages.length === 0 && !loading && (
@@ -345,6 +526,10 @@ const MVPV2 = () => {
                   </div>
                 ))}
 
+                {mcqData && !loading && (
+                  <MCQPrompt mcq={mcqData} onSelect={handleMCQAnswer} />
+                )}
+
                 <AnimatePresence>
                   {loading && (
                     <motion.div
@@ -365,8 +550,10 @@ const MVPV2 = () => {
               </div>
             </div>
 
-            {/* Input */}
             <div className="flex-shrink-0 border-t border-forest-border bg-forest-card/50 p-3">
+              <div className="flex items-center gap-2 mb-2">
+                <DocUpload token={sessionToken} onUploadComplete={(r) => setSnapshot(r.snapshot)} disabled={loading} />
+              </div>
               <form
                 onSubmit={(e) => { e.preventDefault(); void handleSubmitTurn(false) }}
                 className="flex gap-2"
@@ -388,16 +575,34 @@ const MVPV2 = () => {
                   className="flex-1 px-4 py-2.5 bg-forest-darker border border-forest-border rounded-xl text-white text-sm placeholder-forest-gray focus:outline-none focus:border-forest-emerald transition-colors disabled:opacity-60 resize-none"
                 />
                 <div className="flex flex-col gap-1.5">
+                  <MicButton
+                    onTranscript={handleTranscript}
+                    disabled={loading}
+                    highlight={isSpeechEncouraged}
+                  />
                   {isGuided && (
-                    <button
-                      type="button"
-                      onClick={() => void handleSubmitTurn(true)}
-                      disabled={loading}
-                      className="px-3 py-2 rounded-xl text-xs border border-forest-border bg-forest-card text-forest-light-gray hover:text-forest-emerald hover:border-forest-emerald/50 transition-colors disabled:opacity-50 flex items-center gap-1.5"
-                    >
-                      <Sparkles size={13} />
-                      Stuck
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => void handleSubmitTurn(true)}
+                        disabled={loading}
+                        className="px-3 py-2 rounded-xl text-xs border border-forest-border bg-forest-card text-forest-light-gray hover:text-forest-emerald hover:border-forest-emerald/50 transition-colors disabled:opacity-50 flex items-center gap-1.5"
+                      >
+                        <Sparkles size={13} />
+                        Stuck
+                      </button>
+                      {activeNode && !['mastered_independently', 'mastered_with_support', 'skipped'].includes(activeNode.status) && (
+                        <button
+                          type="button"
+                          onClick={() => setSkipModalNode(activeNode)}
+                          disabled={loading}
+                          className="px-3 py-2 rounded-xl text-xs border border-forest-border bg-forest-card text-forest-light-gray hover:text-amber-400 hover:border-amber-400/50 transition-colors disabled:opacity-50 flex items-center gap-1.5"
+                        >
+                          <SkipForward size={13} />
+                          Skip
+                        </button>
+                      )}
+                    </>
                   )}
                   <button
                     type="submit"
@@ -413,7 +618,14 @@ const MVPV2 = () => {
           </div>
         </div>
 
-        {/* Error toast */}
+        {skipModalNode && (
+          <SkipNodeModal
+            nodeTitle={skipModalNode.title}
+            onConfirm={handleSkipConfirm}
+            onCancel={() => setSkipModalNode(null)}
+          />
+        )}
+
         {pageError && <ErrorToast message={pageError} onDismiss={() => setPageError('')} />}
       </div>
     )

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { CheckCircle2, Compass, Lock, Sparkles, AlertCircle, Focus } from 'lucide-react'
+import { CheckCircle2, Compass, Lock, SkipForward, Sparkles, AlertCircle, Focus } from 'lucide-react'
 import { NODE_STATES } from '../../lib/sprint4/constants'
 
 const NODE_RADIUS = 28
@@ -44,6 +44,14 @@ const statusConfig = {
     cssClass: 's4-node-mastered-ind',
     icon: CheckCircle2,
     dotColor: '#34d399',
+  },
+  [NODE_STATES.SKIPPED]: {
+    bg: 'rgba(107, 114, 128, 0.15)',
+    border: 'rgba(107, 114, 128, 0.5)',
+    glow: null,
+    cssClass: 's4-node-skipped',
+    icon: SkipForward,
+    dotColor: '#6b7280',
   },
 }
 

@@ -96,6 +96,20 @@ export const callStructuredPrompt = async ({
   temperature = 0.2,
   maxCompletionTokens = 3500,
 }) => {
+  const clampNumericFields = (obj) => {
+    if (!obj || typeof obj !== 'object') return obj
+    const out = Array.isArray(obj) ? [...obj] : { ...obj }
+    for (const key of Object.keys(out)) {
+      if (typeof out[key] === 'number') {
+        out[key] = Math.max(-1e6, Math.min(1e6, out[key]))
+      } else if (typeof out[key] === 'object') {
+        out[key] = clampNumericFields(out[key])
+      }
+    }
+    if (typeof out.confidence === 'number') out.confidence = Math.max(0, Math.min(1, out.confidence))
+    return out
+  }
+
   const invoke = async (messageContent) => {
     const raw = await callChat({
       systemPrompt,
@@ -105,7 +119,7 @@ export const callStructuredPrompt = async ({
       maxCompletionTokens,
       responseFormat: { type: 'json_object' },
     })
-    const parsed = parseJson(raw)
+    const parsed = clampNumericFields(parseJson(raw))
     const result = schema.safeParse(parsed)
     return { raw, result }
   }
