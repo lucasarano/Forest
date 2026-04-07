@@ -247,6 +247,7 @@ const server = createServer(async (request, response) => {
       const artifacts = await generateStudyArtifacts(seedConcept)
       const record = await createStudyConfigRecord({
         seedConcept, conceptSummary: artifacts.conceptSummary, timeBudgetMs,
+        graphModel: artifacts.graphModel,
         graphNodes: artifacts.graphNodes, evaluationBundle: artifacts.evaluationBundle,
       })
 

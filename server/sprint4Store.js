@@ -56,7 +56,7 @@ export const getStudyConfig = async (studyConfigId) => {
   return store.studyConfigs[studyConfigId] || null
 }
 
-export const createStudyConfigRecord = async ({ seedConcept, conceptSummary, timeBudgetMs, graphNodes, evaluationBundle }) => {
+export const createStudyConfigRecord = async ({ seedConcept, conceptSummary, timeBudgetMs, graphNodes, evaluationBundle, graphModel = 'legacy' }) => {
   const now = new Date().toISOString()
   const id = crypto.randomUUID()
 
@@ -65,6 +65,7 @@ export const createStudyConfigRecord = async ({ seedConcept, conceptSummary, tim
     seedConcept,
     conceptSummary,
     timeBudgetMs,
+    graphModel,
     graphNodes,
     evaluationBundle,
     createdAt: now,
@@ -119,4 +120,3 @@ export const listSessions = async () => {
   const store = await ensureStore()
   return Object.values(store.sessions)
 }
-

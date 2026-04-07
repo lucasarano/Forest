@@ -14,6 +14,11 @@ export const SPRINT4_CONDITIONS = {
   CONTROL: 'freeform_control',
 }
 
+export const SPRINT4_GRAPH_MODELS = {
+  LEGACY: 'legacy',
+  ROOT_DYNAMIC: 'root_dynamic',
+}
+
 export const EVIDENCE_DIMENSIONS = [
   'explanation',
   'causalReasoning',
@@ -38,6 +43,11 @@ export const NODE_STATES = {
   SKIPPED: 'skipped',
   MASTERED_WITH_SUPPORT: 'mastered_with_support',
   MASTERED_INDEPENDENTLY: 'mastered_independently',
+}
+
+export const NODE_TYPES = {
+  ROOT: 'root',
+  DYNAMIC: 'dynamic',
 }
 
 export const EVALUATION_PROMPT_IDS = {

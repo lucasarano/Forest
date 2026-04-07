@@ -10,9 +10,11 @@ import {
   isMasteredNodeState,
   MAX_VISIBLE_HISTORY,
   MODEL_BY_CONTEXT,
+  NODE_TYPES,
   NODE_STATES,
   PROMPT_KINDS,
   SPRINT4_CONDITIONS,
+  SPRINT4_GRAPH_MODELS,
   SPRINT4_INSTRUMENTATION_VERSION,
   SPRINT4_PHASES,
 } from './constants.js'
@@ -24,6 +26,8 @@ const log = (tag, data) => {
   const ts = new Date().toISOString()
   console.log(`${LOG_PREFIX} ${ts} [${tag}]`, typeof data === 'string' ? data : JSON.stringify(data, null, 2))
 }
+
+const UNKNOWN_CONFUSION_TOPIC = 'this concept'
 
 const ScoreSchema = z.number().int().min(0).max(2)
 
@@ -225,6 +229,10 @@ const addRuntimeFields = (node) => ({
   misconceptionStreak: node.misconceptionStreak || 0,
   attempts: node.attempts || 0,
   lastAssessmentSummary: node.lastAssessmentSummary || '',
+  nodeType: node.nodeType || (node.isRoot ? NODE_TYPES.ROOT : ''),
+  simpleGoodTurnCount: node.simpleGoodTurnCount || 0,
+  clarificationDepth: node.clarificationDepth || 0,
+  derivedFromTopic: node.derivedFromTopic || '',
 })
 
 const normalizePlannerNodes = (plannerOutput) => {
@@ -293,6 +301,10 @@ const normalizeLightNodes = (lightNodes, existingGraphNodes = []) => {
       promptPack: null,
       orderIndex: baseIndex + index,
       depth: 0,
+      nodeType: node.nodeType || NODE_TYPES.DYNAMIC,
+      simpleGoodTurnCount: node.simpleGoodTurnCount || 0,
+      clarificationDepth: node.clarificationDepth || 0,
+      derivedFromTopic: node.derivedFromTopic || '',
     })
   })
 }
@@ -530,6 +542,225 @@ const getBestScores = (node, evidenceRecords) => {
   }), createEmptyDimensionScores())
 }
 
+const isRootDynamicGraphSession = (session) => session?.graphModel === SPRINT4_GRAPH_MODELS.ROOT_DYNAMIC
+
+const isDynamicNode = (node, session = null) =>
+  !!node &&
+  node.nodeType === NODE_TYPES.DYNAMIC &&
+  (!session || isRootDynamicGraphSession(session))
+
+const normalizeConfusionTopic = (value) => {
+  const cleaned = `${value || ''}`
+    .replace(/^['"`(\[]+|['"`)\].,:;!?]+$/g, '')
+    .replace(/^(?:what\s+)?(?:a|an|the)\s+/i, '')
+    .replace(/\b(?:is|are|was|were|means?|mean|works?|work)\b$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  return cleaned.length >= 2 ? cleaned : ''
+}
+
+const getTopicKey = (value) => {
+  const normalized = normalizeConfusionTopic(value)
+  return normalized ? slugify(normalized) : ''
+}
+
+const toDisplayTopic = (value) => {
+  const normalized = normalizeConfusionTopic(value) || UNKNOWN_CONFUSION_TOPIC
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1)
+}
+
+const EXPLICIT_CONFUSION_PATTERNS = [
+  /i\s*(?:don'?t|do\s*not)\s*(?:understand|get|know)\s+(?:what\s+)?(.{1,80})/i,
+  /(?:don'?t|do\s*not)\s*(?:understand|get)\s+(?:how|why|what)\s+(.{1,80})/i,
+  /(?:confused|lost)\s+(?:about|by|on)\s+(.{1,80})/i,
+  /(?:what\s+(?:is|are|does)|explain)\s+(.{1,80})/i,
+]
+
+const BARE_CONFUSION_PATTERNS = [
+  /^i\s*(?:don'?t|do\s*not)\s*(?:understand|get|know)\b/i,
+  /^i(?:'m|\s+am)?\s*(?:confused|lost)\b/i,
+  /^i(?:'m|\s+am)?\s*stuck\b/i,
+]
+
+const PROMPT_CONTEXT_PATTERNS = [
+  /['"`]([^'"`?]{2,80})['"`]/,
+  /do you know what\s+([^?.,!]{2,80})/i,
+  /what\s+(?:is|are|does)\s+([^?.,!]{2,80})/i,
+  /focus on\s+([^?.,!]{2,80})/i,
+]
+
+const detectExplicitConfusion = (msg) => {
+  if (!msg) return { expressedConfusion: false, explicitTopic: '' }
+
+  for (const pattern of EXPLICIT_CONFUSION_PATTERNS) {
+    const match = msg.match(pattern)
+    if (match) {
+      return {
+        expressedConfusion: true,
+        explicitTopic: normalizeConfusionTopic(match[1]),
+      }
+    }
+  }
+
+  const expressedConfusion = BARE_CONFUSION_PATTERNS.some((pattern) => pattern.test(msg))
+  return {
+    expressedConfusion,
+    explicitTopic: '',
+  }
+}
+
+const inferTopicFromPromptContext = ({ session, node }) => {
+  const candidates = [
+    ...[...(session?.messages || [])]
+      .reverse()
+      .filter((message) => message.nodeId === node?.id && message.role === 'assistant')
+      .map((message) => message.content),
+    getNodePrompt(node, node?.promptKind || PROMPT_KINDS.ASSESS),
+    node?.initialPrompt || '',
+    node?.derivedFromTopic || '',
+    node?.title || '',
+  ]
+
+  for (const candidate of candidates) {
+    for (const pattern of PROMPT_CONTEXT_PATTERNS) {
+      const match = `${candidate || ''}`.match(pattern)
+      if (!match) continue
+      const normalized = normalizeConfusionTopic(match[1])
+      if (normalized) return normalized
+    }
+  }
+
+  return ''
+}
+
+const inferRecentHistoryConfusion = ({ session, node }) => {
+  const recentNodeMessages = [...(session?.messages || [])]
+    .filter((message) => message.nodeId === node?.id)
+    .slice(-MAX_VISIBLE_HISTORY)
+    .reverse()
+
+  for (const message of recentNodeMessages) {
+    if (message.role !== 'user') continue
+    const detection = detectExplicitConfusion(message.content)
+    if (!detection.expressedConfusion) continue
+
+    return {
+      expressedConfusion: true,
+      topic: normalizeConfusionTopic(detection.explicitTopic),
+      source: detection.explicitTopic ? 'recentUserExplicit' : 'recentUserConfusion',
+      explicitTopic: detection.explicitTopic,
+    }
+  }
+
+  return {
+    expressedConfusion: false,
+    topic: '',
+    source: '',
+    explicitTopic: '',
+  }
+}
+
+const inferConfusionInfo = ({ userMessage, assessment, node, session, useRecentHistory = false }) => {
+  const detection = detectExplicitConfusion(userMessage)
+  const recentHistoryConfusion = useRecentHistory
+    ? inferRecentHistoryConfusion({ session, node })
+    : { expressedConfusion: false, topic: '', source: '', explicitTopic: '' }
+
+  if (!detection.expressedConfusion && !recentHistoryConfusion.expressedConfusion) {
+    return {
+      expressedConfusion: false,
+      topic: '',
+      source: '',
+      explicitTopic: '',
+    }
+  }
+
+  const topicCandidates = [
+    detection.explicitTopic ? { topic: detection.explicitTopic, source: 'explicit' } : null,
+    recentHistoryConfusion.topic ? { topic: recentHistoryConfusion.topic, source: recentHistoryConfusion.source } : null,
+    assessment?.missingConcepts?.[0] ? { topic: assessment.missingConcepts[0], source: 'missingConcept' } : null,
+    assessment?.subtopicSuggestions?.[0]?.title ? { topic: assessment.subtopicSuggestions[0].title, source: 'subtopicSuggestion' } : null,
+    (() => {
+      const fromPrompt = inferTopicFromPromptContext({ session, node })
+      return fromPrompt ? { topic: fromPrompt, source: 'promptContext' } : null
+    })(),
+  ].filter(Boolean)
+
+  const selected = topicCandidates.find((candidate) => normalizeConfusionTopic(candidate.topic))
+  return {
+    expressedConfusion: true,
+    topic: normalizeConfusionTopic(selected?.topic),
+    source: selected?.source || '',
+    explicitTopic: detection.explicitTopic || recentHistoryConfusion.explicitTopic,
+  }
+}
+
+const getAncestorNodes = (graphNodes, nodeId, seen = new Set()) => {
+  if (!nodeId || seen.has(nodeId)) return []
+  seen.add(nodeId)
+
+  const nodeMap = getNodeMap(graphNodes)
+  const node = nodeMap.get(nodeId)
+  if (!node) return []
+
+  return (node.parentIds || []).flatMap((parentId) => {
+    const parent = nodeMap.get(parentId)
+    if (!parent) return []
+    return [parent, ...getAncestorNodes(graphNodes, parent.id, seen)]
+  })
+}
+
+const findMatchingAncestorTopic = ({ graphNodes, nodeId, topic }) => {
+  const topicKey = getTopicKey(topic)
+  if (!topicKey) return null
+
+  return getAncestorNodes(graphNodes, nodeId).find((ancestor) => (
+    getTopicKey(ancestor.derivedFromTopic || ancestor.title) === topicKey
+  )) || null
+}
+
+const isDirectionallyCorrectAssessment = (assessment) =>
+  !assessment?.misconceptionDetected &&
+  (assessment?.explanation >= 1 || assessment?.causalReasoning >= 1)
+
+const createDeterministicClarificationNode = ({ activeNode, confusionInfo, session }) => {
+  const topic = normalizeConfusionTopic(
+    confusionInfo?.topic ||
+    inferTopicFromPromptContext({ session, node: activeNode }) ||
+    activeNode?.derivedFromTopic ||
+    activeNode?.title ||
+    UNKNOWN_CONFUSION_TOPIC
+  ) || UNKNOWN_CONFUSION_TOPIC
+
+  const displayTopic = toDisplayTopic(topic)
+
+  return {
+    id: getTopicKey(topic) || `${activeNode.id}-clarification`,
+    title: displayTopic,
+    summary: `Clarify what ${topic} means and how it supports understanding of ${activeNode.title}.`,
+    initialPrompt: `Let's focus on ${topic}. In one or two plain-language sentences, what do you think ${topic} means here?`,
+    parentIds: [],
+    nodeType: NODE_TYPES.DYNAMIC,
+    clarificationDepth: (activeNode?.clarificationDepth || 0) + 1,
+    simpleGoodTurnCount: 0,
+    derivedFromTopic: topic,
+  }
+}
+
+const getLearningCompleted = ({ session, graphNodes }) => {
+  if (!isRootDynamicGraphSession(session)) {
+    return graphNodes.every((node) => isMasteredNodeState(node.status)) && graphNodes.length > 0
+  }
+
+  const rootNode = graphNodes.find((node) => node.nodeType === NODE_TYPES.ROOT || node.isRoot) || null
+  const unresolvedDynamicNodes = graphNodes.filter((node) => (
+    node.nodeType === NODE_TYPES.DYNAMIC && !isMasteredNodeState(node.status)
+  ))
+
+  return !!rootNode && isMasteredNodeState(rootNode.status) && unresolvedDynamicNodes.length === 0
+}
+
 const isNodeAvailable = (node, nodeMap) => (node.parentIds || []).every((parentId) => {
   const parent = nodeMap.get(parentId)
   return parent && isMasteredNodeState(parent.status)
@@ -546,7 +777,12 @@ const getNextEligibleNode = (session, preferredNodeId = '') => {
   })
   if (preferredNodeId) {
     const preferred = nodeMap.get(preferredNodeId)
-    if (preferred && preferred.status !== NODE_STATES.LOCKED) {
+    if (
+      preferred &&
+      preferred.status !== NODE_STATES.LOCKED &&
+      !isMasteredNodeState(preferred.status) &&
+      isNodeAvailable(preferred, nodeMap)
+    ) {
       log('getNextEligibleNode:result', { selected: preferred.id, reason: 'preferred' })
       return preferred
     }
@@ -667,49 +903,48 @@ const getNodeMasteryState = (node, evidenceRecords) => {
   return node.withSupportUsed ? NODE_STATES.MASTERED_WITH_SUPPORT : NODE_STATES.MASTERED_INDEPENDENTLY
 }
 
-const createFallbackAssessment = (helpRequested) => ({
-  explanation: 0,
-  causalReasoning: 0,
-  transfer: 0,
-  misconceptionResistance: 0,
-  misconceptionDetected: false,
-  misconceptionLabel: '',
-  misconceptionReason: '',
-  missingConcepts: ['The learner needs a more specific explanation.'],
-  strengths: [],
-  subtopicSuggestions: [],
-  recommendedAction: helpRequested ? PROMPT_KINDS.TEACH : PROMPT_KINDS.REASSESS,
-  conciseRationale: helpRequested
-    ? 'The learner explicitly asked for help before producing enough evidence.'
-    : 'The latest response did not contain enough substance to score strongly.',
-  tutorFocus: helpRequested
-    ? 'Give one small conceptual foothold and ask a narrower follow-up.'
-    : 'Request a more concrete explanation tied to the node focus.',
-  confidence: 0.15,
-})
+const createFallbackAssessment = ({ helpRequested, node, evidenceRecords, userMessage, session }) => {
+  const bestScores = getBestScores(node || { id: '' }, evidenceRecords || [])
+  const confusionInfo = inferConfusionInfo({
+    userMessage,
+    assessment: null,
+    node,
+    session,
+    useRecentHistory: helpRequested || !`${userMessage || ''}`.trim(),
+  })
+  const explicitHelp = helpRequested || confusionInfo.expressedConfusion
+
+  return {
+    explanation: bestScores.explanation,
+    causalReasoning: bestScores.causalReasoning,
+    transfer: bestScores.transfer,
+    misconceptionResistance: bestScores.misconceptionResistance,
+    misconceptionDetected: false,
+    misconceptionLabel: '',
+    misconceptionReason: '',
+    missingConcepts: confusionInfo.topic
+      ? [confusionInfo.topic]
+      : ['The learner needs a more specific explanation.'],
+    strengths: [],
+    subtopicSuggestions: confusionInfo.topic
+      ? [{ title: confusionInfo.topic, reason: 'Derived from explicit learner confusion during fallback assessment.' }]
+      : [],
+    recommendedAction: explicitHelp ? PROMPT_KINDS.TEACH : PROMPT_KINDS.REASSESS,
+    conciseRationale: explicitHelp
+      ? `Fallback assessment preserved the learner's explicit confusion${confusionInfo.topic ? ` about "${confusionInfo.topic}"` : ''}.`
+      : 'Fallback assessment preserved prior evidence because the model response was unavailable.',
+    tutorFocus: explicitHelp
+      ? `Clarify ${confusionInfo.topic || 'the immediate sticking point'} in plain language and ask one narrow follow-up.`
+      : 'Request a more concrete explanation tied to the current node focus.',
+    confidence: 0.15,
+  }
+}
 
 const getUploadedDocContext = (session) => {
   const docs = session.uploadedDocuments || []
   if (!docs.length) return ''
   const combined = docs.map((d) => d.extractedText || '').join('\n\n')
   return combined.slice(0, 2000)
-}
-
-const CONFUSION_TOPIC_PATTERNS = [
-  /i\s*(?:don'?t|do\s*not)\s*(?:understand|get|know)\s+(?:what\s+)?(.{3,80})/i,
-  /(?:don'?t|do\s*not)\s*(?:understand|get)\s+(?:how|why|what)\s+(.{3,80})/i,
-  /(?:confused|lost)\s+(?:about|by|on)\s+(.{3,80})/i,
-  /(?:what\s+(?:is|are|does)|explain)\s+(.{3,80})/i,
-  /i\s*(?:don'?t|do\s*not)\s*(?:understand|know|get)\b/i,
-]
-
-const extractConfusionTopic = (msg) => {
-  if (!msg) return null
-  for (const pat of CONFUSION_TOPIC_PATTERNS) {
-    const m = msg.match(pat)
-    if (m) return m[1]?.replace(/[.!?,;]+$/, '').trim() || null
-  }
-  return null
 }
 
 const decideNextAction = ({ node, assessment, session, evidenceRecords, userMessage }) => {
@@ -731,13 +966,25 @@ const decideNextAction = ({ node, assessment, session, evidenceRecords, userMess
   const hasStrongCore = bestScores.explanation >= 2 && bestScores.causalReasoning >= 2
 
   const nodeAttempts = (node.attempts || 0)
-  const confusionTopic = extractConfusionTopic(userMessage)
-  const userExpressedConfusion = !!confusionTopic
-
-  const shouldExpand =
-    (assessment.misconceptionDetected && priorMisconceptionCount >= 2) ||
-    (assessment.missingConcepts?.length >= 3 && !hasStrongCore && nodeAttempts >= 1) ||
-    userExpressedConfusion
+  const confusionInfo = inferConfusionInfo({
+    userMessage,
+    assessment,
+    node,
+    session,
+    useRecentHistory: session.helpRequested || !`${userMessage || ''}`.trim(),
+  })
+  const duplicateAncestor = confusionInfo.topic
+    ? findMatchingAncestorTopic({
+        graphNodes: session.graphNodes || [],
+        nodeId: node.id,
+        topic: confusionInfo.topic,
+      })
+    : null
+  const depthCapReached = isDynamicNode(node, session) && (node.clarificationDepth || 0) >= 3
+  const shouldExpand = confusionInfo.expressedConfusion &&
+    isRootDynamicGraphSession(session) &&
+    !depthCapReached &&
+    !duplicateAncestor
 
   log('decideNextAction:expandCheck', {
     shouldExpand,
@@ -746,15 +993,52 @@ const decideNextAction = ({ node, assessment, session, evidenceRecords, userMess
     subtopicSuggestionCount: assessment.subtopicSuggestions?.length || 0,
     missingConceptCount: assessment.missingConcepts?.length || 0,
     nodeAttempts,
-    userExpressedConfusion,
-    confusionTopic,
+    userExpressedConfusion: confusionInfo.expressedConfusion,
+    confusionTopic: confusionInfo.topic,
+    confusionSource: confusionInfo.source || '',
+    duplicateAncestorId: duplicateAncestor?.id || '',
+    depthCapReached,
     hasStrongCore,
     bestScores,
   })
 
   if (shouldExpand) {
     next.nextAction = 'expand_graph'
-    if (confusionTopic) next.confusionTopic = confusionTopic
+    next.confusionInfo = confusionInfo
+    return next
+  }
+
+  if (isRootDynamicGraphSession(session) && confusionInfo.expressedConfusion) {
+    next.nextAction = PROMPT_KINDS.TEACH
+    next.reason = depthCapReached
+      ? `The learner is explicitly confused about "${confusionInfo.topic || UNKNOWN_CONFUSION_TOPIC}", but the clarification depth cap was reached.`
+      : duplicateAncestor
+        ? `The learner is explicitly confused about "${confusionInfo.topic || UNKNOWN_CONFUSION_TOPIC}", which already exists in the active ancestry.`
+        : assessment.conciseRationale
+    next.confusionInfo = confusionInfo
+    return next
+  }
+
+  if (isDynamicNode(node, session)) {
+    const nextGoodTurnCount = (node.simpleGoodTurnCount || 0) + (isDirectionallyCorrectAssessment(assessment) ? 1 : 0)
+
+    if (nextGoodTurnCount >= 2) {
+      next.nextAction = 'mark_mastered'
+      next.markState = node.withSupportUsed ? NODE_STATES.MASTERED_WITH_SUPPORT : NODE_STATES.MASTERED_INDEPENDENTLY
+      return next
+    }
+
+    if (isDirectionallyCorrectAssessment(assessment)) {
+      next.nextAction = PROMPT_KINDS.REASSESS
+      next.markState = NODE_STATES.PARTIAL
+      next.reason = `The learner gave a directionally correct answer for "${node.title}". One more solid turn will complete this clarification node.`
+      return next
+    }
+
+    next.nextAction = assessment.explanation === 0 || assessment.causalReasoning === 0 || session.helpRequested
+      ? PROMPT_KINDS.TEACH
+      : PROMPT_KINDS.REASSESS
+    next.reason = `The learner has not yet shown enough understanding to complete the clarification node "${node.title}".`
     return next
   }
 
@@ -813,12 +1097,20 @@ const decideNextAction = ({ node, assessment, session, evidenceRecords, userMess
   return next
 }
 
+const buildFallbackTutorContent = ({ node, decision, assessment, promptText }) => {
+  const lead = decision?.nextAction === 'mark_mastered'
+    ? `Nice progress on ${node?.title || 'this concept'}.`
+    : `Let's focus on ${node?.title || 'this concept'}.`
+  const focus = assessment?.tutorFocus || 'Give a short plain-language answer.'
+  return `${lead} ${focus}\n\n${promptText}`.trim()
+}
+
 const plannerNode = async (state) => {
   const { session, activeNode, latestAssessment, seedConcept, decision } = state
   const skippedNodeTitles = (session.graphNodes || [])
     .filter((n) => n.status === NODE_STATES.SKIPPED)
     .map((n) => n.title)
-  const confusionTopic = decision?.confusionTopic || null
+  const confusionTopic = decision?.confusionInfo?.topic || null
   log('plannerNode:start', {
     activeNodeId: activeNode?.id,
     activeNodeTitle: activeNode?.title,
@@ -827,20 +1119,49 @@ const plannerNode = async (state) => {
     skippedNodeTitles,
     confusionTopic,
   })
-  const expansion = await callStructuredPrompt({
-    systemPrompt: 'You are Forest Sprint 4 ConceptPlanner. Return structured JSON only.',
-    userPrompt: createExpansionPrompt({
-      seedConcept,
-      node: activeNode,
-      latestAssessment,
-      skippedNodeTitles,
-      confusionTopic,
-    }),
-    schema: ExpansionSchema,
-    model: MODEL_BY_CONTEXT.planner,
-  })
 
-  const newNodes = normalizeLightNodes(expansion.newNodes, session.graphNodes || [])
+  let expansion
+  try {
+    expansion = await callStructuredPrompt({
+      systemPrompt: 'You are Forest Sprint 4 ConceptPlanner. Return structured JSON only.',
+      userPrompt: createExpansionPrompt({
+        seedConcept,
+        node: activeNode,
+        latestAssessment,
+        skippedNodeTitles,
+        confusionTopic,
+      }),
+      schema: ExpansionSchema,
+      model: MODEL_BY_CONTEXT.planner,
+    })
+  } catch (error) {
+    const fallbackNode = createDeterministicClarificationNode({
+      activeNode,
+      confusionInfo: decision?.confusionInfo,
+      session,
+    })
+    log('plannerNode:fallback', {
+      activeNodeId: activeNode?.id,
+      confusionTopic,
+      error: error instanceof Error ? error.message : 'Unknown planner error',
+      fallbackNodeId: fallbackNode.id,
+      fallbackTopic: fallbackNode.derivedFromTopic,
+    })
+    expansion = {
+      reason: `Deterministic clarification fallback for "${fallbackNode.derivedFromTopic}".`,
+      newNodes: [fallbackNode],
+      retargetNodeId: '',
+    }
+  }
+
+  const newNodes = normalizeLightNodes(expansion.newNodes, session.graphNodes || []).map((node) => ({
+    ...node,
+    nodeType: NODE_TYPES.DYNAMIC,
+    clarificationDepth: node.clarificationDepth > 0
+      ? node.clarificationDepth
+      : (activeNode?.clarificationDepth || 0) + 1,
+    derivedFromTopic: node.derivedFromTopic || normalizeConfusionTopic(decision?.confusionInfo?.topic || node.title),
+  }))
 
   const existingIds = new Set((session.graphNodes || []).map((n) => n.id))
   const rawRetarget = slugify(expansion.retargetNodeId || '')
@@ -881,23 +1202,45 @@ const assessmentNode = async (state) => {
   if (!userMessage.trim()) {
     log('assessmentNode:fallback', 'empty user message, using fallback assessment')
     return {
-      latestAssessment: createFallbackAssessment(helpRequested),
+      latestAssessment: createFallbackAssessment({
+        helpRequested,
+        node: activeNode,
+        evidenceRecords: session.evidenceRecords || [],
+        userMessage,
+        session,
+      }),
     }
   }
 
-  const assessment = await callStructuredPrompt({
-    systemPrompt: 'You are Forest Sprint 4 Assessment. Return strict JSON only. Do not speak to the student.',
-    userPrompt: createAssessmentPrompt({
-      seedConcept,
-      node: activeNode,
-      recentMessages: formatRecentMessages(session.messages || [], activeNode.id),
-      userMessage,
+  let assessment
+  try {
+    assessment = await callStructuredPrompt({
+      systemPrompt: 'You are Forest Sprint 4 Assessment. Return strict JSON only. Do not speak to the student.',
+      userPrompt: createAssessmentPrompt({
+        seedConcept,
+        node: activeNode,
+        recentMessages: formatRecentMessages(session.messages || [], activeNode.id),
+        userMessage,
+        helpRequested,
+        uploadedDocContext: getUploadedDocContext(session),
+      }),
+      schema: AssessmentSchema,
+      model: MODEL_BY_CONTEXT.assessment,
+    })
+  } catch (error) {
+    assessment = createFallbackAssessment({
       helpRequested,
-      uploadedDocContext: getUploadedDocContext(session),
-    }),
-    schema: AssessmentSchema,
-    model: MODEL_BY_CONTEXT.assessment,
-  })
+      node: activeNode,
+      evidenceRecords: session.evidenceRecords || [],
+      userMessage,
+      session,
+    })
+    log('assessmentNode:fallback', {
+      activeNodeId: activeNode?.id,
+      error: error instanceof Error ? error.message : 'Unknown assessment error',
+      confusionTopic: assessment.missingConcepts?.[0] || '',
+    })
+  }
 
   log('assessmentNode:result', {
     explanation: assessment.explanation,
@@ -929,7 +1272,7 @@ const decisionNode = async (state) => {
     markState: decision.markState,
     scheduleRecall: decision.scheduleRecall,
     activateNodeId: decision.activateNodeId,
-    confusionTopic: decision.confusionTopic || null,
+    confusionTopic: decision.confusionInfo?.topic || null,
     reason: decision.reason,
   })
   return { decision }
@@ -997,6 +1340,11 @@ const tutorNode = async (state) => {
       newNodeIds: plannerPatch.newNodes.map((node) => node.id),
       reason: plannerPatch.reason,
     }))
+    events.push(createEvent('dynamic_child_created', {
+      sourceNodeId: activeNode.id,
+      newNodeIds,
+      topics: plannerPatch.newNodes.map((node) => node.derivedFromTopic || node.title),
+    }))
   }
 
   const nodeMap = getNodeMap(graphNodes)
@@ -1020,6 +1368,9 @@ const tutorNode = async (state) => {
 
   const previousNodeId = session.currentNodeId
   const newAttempts = (currentNode.attempts || 0) + 1
+  const dynamicGoodTurnIncrement = isDynamicNode(currentNode, session) && isDirectionallyCorrectAssessment(latestAssessment)
+    ? 1
+    : 0
   const nextNodeState = {
     ...currentNode,
     attempts: newAttempts,
@@ -1027,8 +1378,11 @@ const tutorNode = async (state) => {
     withSupportUsed: currentNode.withSupportUsed || supportUsed,
     bestScores: getBestScores(currentNode, evidenceRecords),
     lastAssessmentSummary: latestAssessment.conciseRationale,
+    simpleGoodTurnCount: isDynamicNode(currentNode, session)
+      ? (currentNode.simpleGoodTurnCount || 0) + dynamicGoodTurnIncrement
+      : (currentNode.simpleGoodTurnCount || 0),
     promptKind: decision.nextAction === 'mark_mastered'
-      ? PROMPT_KINDS.RECALL
+      ? (isDynamicNode(currentNode, session) ? currentNode.promptKind : PROMPT_KINDS.RECALL)
       : (decision.nextAction === 'expand_graph' ? currentNode.promptKind : decision.nextAction),
     lastMcqAtAttempt: decision.nextAction === PROMPT_KINDS.MCQ ? newAttempts : (currentNode.lastMcqAtAttempt || 0),
   }
@@ -1081,6 +1435,7 @@ const tutorNode = async (state) => {
     newStatus: nextNodeState.status,
     promptKind: nextNodeState.promptKind,
     attempts: nextNodeState.attempts,
+    simpleGoodTurnCount: nextNodeState.simpleGoodTurnCount,
     bestScores: nextNodeState.bestScores,
     masteryState,
     parentIds: nextNodeState.parentIds,
@@ -1196,28 +1551,43 @@ const tutorNode = async (state) => {
     nextNodePromptKind: nextNode.promptKind,
   })
 
-  const tutorContent = await callTextPrompt({
-    systemPrompt: createGuidedTutorPrompt({
-      seedConcept,
+  let tutorContent
+  try {
+    tutorContent = await callTextPrompt({
+      systemPrompt: createGuidedTutorPrompt({
+        seedConcept,
+        node: nextNode,
+        decision,
+        assessment: latestAssessment,
+        recentMessages,
+        uploadedDocContext: getUploadedDocContext(session),
+      }),
+      messages: [{
+        role: 'user',
+        content: [
+          `Decision action: ${decision.nextAction}`,
+          `Use this node prompt when appropriate: ${promptText}`,
+          `If the learner just mastered a previous node, transition naturally into this next focus: ${nextNode.title}`,
+          mcqData ? `Present this as a multiple choice question instead of open-ended. Question: ${mcqData.question}\nOptions:\nA) ${mcqData.correctAnswer}\n${mcqData.distractors.map((d, i) => `${String.fromCharCode(66 + i)}) ${d.text}`).join('\n')}` : '',
+        ].filter(Boolean).join('\n'),
+      }],
+      temperature: 0.45,
+      maxCompletionTokens: 900,
+      model: MODEL_BY_CONTEXT.tutor,
+    })
+  } catch (error) {
+    tutorContent = buildFallbackTutorContent({
       node: nextNode,
       decision,
       assessment: latestAssessment,
-      recentMessages,
-      uploadedDocContext: getUploadedDocContext(session),
-    }),
-    messages: [{
-      role: 'user',
-      content: [
-        `Decision action: ${decision.nextAction}`,
-        `Use this node prompt when appropriate: ${promptText}`,
-        `If the learner just mastered a previous node, transition naturally into this next focus: ${nextNode.title}`,
-        mcqData ? `Present this as a multiple choice question instead of open-ended. Question: ${mcqData.question}\nOptions:\nA) ${mcqData.correctAnswer}\n${mcqData.distractors.map((d, i) => `${String.fromCharCode(66 + i)}) ${d.text}`).join('\n')}` : '',
-      ].filter(Boolean).join('\n'),
-    }],
-    temperature: 0.45,
-    maxCompletionTokens: 900,
-    model: MODEL_BY_CONTEXT.tutor,
-  })
+      promptText,
+    })
+    log('tutorNode:fallback', {
+      nextNodeId: nextNode.id,
+      error: error instanceof Error ? error.message : 'Unknown tutor error',
+      decisionAction: decision.nextAction,
+    })
+  }
 
   const tutorMessage = createMessage({
     role: 'assistant',
@@ -1230,8 +1600,7 @@ const tutorNode = async (state) => {
     },
   })
 
-  const allMastered = graphNodes.every((n) => isMasteredNodeState(n.status))
-  const learningCompleted = allMastered && graphNodes.length > 0
+  const learningCompleted = getLearningCompleted({ session, graphNodes })
 
   const metrics = { ...(session.metrics || createEmptyMetrics()) }
   if (helpRequested || decision.nextAction === PROMPT_KINDS.TEACH) {
@@ -1320,6 +1689,10 @@ const buildSeedNode = (seedConcept) => ({
   initialPrompt: `Let's explore: ${seedConcept}. In your own words, explain what you understand about this topic so far.`,
   parentIds: [],
   isRoot: true,
+  nodeType: NODE_TYPES.ROOT,
+  clarificationDepth: 0,
+  simpleGoodTurnCount: 0,
+  derivedFromTopic: '',
   rubric: null,
   promptPack: null,
 })
@@ -1357,6 +1730,7 @@ export const generateStudyArtifacts = async (seedConcept) => {
   return {
     seedConcept: trimmed,
     conceptSummary: trimmed,
+    graphModel: SPRINT4_GRAPH_MODELS.ROOT_DYNAMIC,
     rootNodeId: seedNode.id,
     graphNodes,
     evaluationBundle: DEFAULT_EVALUATION_BUNDLE,
@@ -1370,6 +1744,7 @@ export const getBuiltinStudyConfigRecord = () => {
     return {
       seedConcept: BUILTIN_SEED_CONCEPT,
       conceptSummary: BUILTIN_SEED_CONCEPT,
+      graphModel: SPRINT4_GRAPH_MODELS.ROOT_DYNAMIC,
       rootNodeId: seedNode.id,
       graphNodes,
       evaluationBundle: DEFAULT_EVALUATION_BUNDLE,
@@ -1382,6 +1757,7 @@ export const getBuiltinStudyConfigRecord = () => {
     seedConcept: artifacts.seedConcept,
     conceptSummary: artifacts.conceptSummary,
     timeBudgetMs: DEFAULT_TIME_BUDGET_MS,
+    graphModel: artifacts.graphModel,
     graphNodes: artifacts.graphNodes,
     evaluationBundle: artifacts.evaluationBundle,
     createdAt: now,
@@ -1402,6 +1778,7 @@ export const createInitialSessionSnapshot = ({ studyConfigId, studyConfig, condi
     id: '',
     studyConfigId,
     condition,
+    graphModel: studyConfig.graphModel || SPRINT4_GRAPH_MODELS.LEGACY,
     phase: SPRINT4_PHASES.SELF_REPORT,
     status: 'active',
     currentNodeId: firstNode?.id || '',
@@ -1441,6 +1818,7 @@ export const runGuidedTurn = async ({ session, studyConfig, userMessage, helpReq
     currentNodeId: session.currentNodeId,
     turnIndex: session.turnIndex,
     phase: session.phase,
+    graphModel: session.graphModel || studyConfig.graphModel || SPRINT4_GRAPH_MODELS.LEGACY,
     nodeCount: (session.graphNodes || []).length,
     messageCount: (session.messages || []).length,
     evidenceCount: (session.evidenceRecords || []).length,
@@ -1481,6 +1859,7 @@ export const runGuidedTurn = async ({ session, studyConfig, userMessage, helpReq
     seedConcept: studyConfig.seedConcept,
     session: {
       ...session,
+      graphModel: session.graphModel || studyConfig.graphModel || SPRINT4_GRAPH_MODELS.LEGACY,
       helpRequested,
     },
     activeNode,
@@ -1510,16 +1889,25 @@ export const runControlTurn = async ({ session, studyConfig, userMessage }) => {
     content: userMessage,
     nodeId: null,
   })
-  const assistantContent = await callTextPrompt({
-    systemPrompt: createControlTutorSystemPrompt(studyConfig.seedConcept),
-    messages: [...(session.messages || []), userMessageEntry].map((message) => ({
-      role: message.role === 'assistant' ? 'assistant' : 'user',
-      content: message.content,
-    })),
-    temperature: 0.55,
-    maxCompletionTokens: 1000,
-    model: MODEL_BY_CONTEXT.tutor,
-  })
+  let assistantContent
+  try {
+    assistantContent = await callTextPrompt({
+      systemPrompt: createControlTutorSystemPrompt(studyConfig.seedConcept),
+      messages: [...(session.messages || []), userMessageEntry].map((message) => ({
+        role: message.role === 'assistant' ? 'assistant' : 'user',
+        content: message.content,
+      })),
+      temperature: 0.55,
+      maxCompletionTokens: 1000,
+      model: MODEL_BY_CONTEXT.tutor,
+    })
+  } catch (error) {
+    assistantContent = `Let's keep working on ${studyConfig.seedConcept}. Tell me one specific part you're unsure about, or try explaining the main idea in one or two sentences.`
+    log('runControlTurn:fallback', {
+      error: error instanceof Error ? error.message : 'Unknown control tutor error',
+      seedConcept: studyConfig.seedConcept,
+    })
+  }
   const assistantMessage = createMessage({
     role: 'assistant',
     content: assistantContent,
@@ -1556,6 +1944,14 @@ export const scoreEvaluationAnswers = async ({ studyConfig, answers }) => {
   })
 
   return evaluationScores
+}
+
+export const __test = {
+  normalizeConfusionTopic,
+  inferConfusionInfo,
+  createDeterministicClarificationNode,
+  getLearningCompleted,
+  isDirectionallyCorrectAssessment,
 }
 
 export { markDependentAvailability, getNextEligibleNode }

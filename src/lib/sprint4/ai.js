@@ -1,5 +1,8 @@
 const OPENAI_API_BASE = 'https://api.openai.com/v1'
 const DEFAULT_MODEL = 'gpt-4.1-mini'
+const REQUEST_TIMEOUT_MS = 20000
+const MAX_RETRY_ATTEMPTS = 3
+const BASE_RETRY_DELAY_MS = 150
 
 const readEnv = (key) => {
   if (typeof process !== 'undefined' && process?.env?.[key]) {
@@ -41,37 +44,127 @@ const getApiKey = () => {
   return apiKey
 }
 
-const callChat = async ({ systemPrompt, messages, model = DEFAULT_MODEL, temperature = 0.2, responseFormat = null, maxCompletionTokens = 3000 }) => {
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+const isRetryableStatus = (status) =>
+  status === 408 || status === 409 || status === 429 || status >= 500
+
+const createChatError = (message, { status = 0, retryable = false, cause = null } = {}) => {
+  const error = new Error(message)
+  error.status = status
+  error.retryable = retryable
+  if (cause) error.cause = cause
+  return error
+}
+
+const isRetryableChatError = (error) => {
+  if (!error) return false
+  if (error.retryable === true) return true
+  if (typeof error.status === 'number' && error.status > 0) return isRetryableStatus(error.status)
+  if (error.name === 'AbortError') return true
+  return error instanceof TypeError || /fetch failed|timed out/i.test(error.message || '')
+}
+
+const getRetryDelayMs = (attempt) =>
+  BASE_RETRY_DELAY_MS * (2 ** Math.max(0, attempt - 1)) + Math.round(Math.random() * 40)
+
+const callChatOnce = async ({ systemPrompt, messages, model, temperature, responseFormat, maxCompletionTokens }) => {
   const apiKey = getApiKey()
-  const response = await fetch(`${OPENAI_API_BASE}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      temperature,
-      max_completion_tokens: maxCompletionTokens,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        ...messages,
-      ],
-      ...(responseFormat ? { response_format: responseFormat } : {}),
-    }),
-  })
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
 
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}))
-    throw new Error(errorData.error?.message || `OpenAI request failed (${response.status})`)
+  try {
+    const response = await fetch(`${OPENAI_API_BASE}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        temperature,
+        max_completion_tokens: maxCompletionTokens,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          ...messages,
+        ],
+        ...(responseFormat ? { response_format: responseFormat } : {}),
+      }),
+      signal: controller.signal,
+    })
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}))
+      throw createChatError(
+        errorData.error?.message || `OpenAI request failed (${response.status})`,
+        { status: response.status, retryable: isRetryableStatus(response.status) }
+      )
+    }
+
+    const data = await response.json()
+    const content = data.choices?.[0]?.message?.content?.trim() || ''
+    if (!content) {
+      throw createChatError('OpenAI returned an empty response.', { retryable: true })
+    }
+    return content
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw createChatError('OpenAI request timed out.', { retryable: true, cause: error })
+    }
+    if (error instanceof Error && typeof error.retryable === 'boolean') throw error
+    throw createChatError(error instanceof Error ? error.message : 'OpenAI request failed.', {
+      retryable: isRetryableChatError(error),
+      cause: error instanceof Error ? error : null,
+    })
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
+const callChat = async ({ systemPrompt, messages, model = DEFAULT_MODEL, temperature = 0.2, responseFormat = null, maxCompletionTokens = 3000 }) => {
+  let lastError = null
+
+  for (let attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      const content = await callChatOnce({
+        systemPrompt,
+        messages,
+        model,
+        temperature,
+        responseFormat,
+        maxCompletionTokens,
+      })
+      if (attempt > 1) {
+        console.warn(`[Sprint4AI] request recovered`, { attempt, model })
+      }
+      return content
+    } catch (error) {
+      lastError = error
+      const retryable = isRetryableChatError(error)
+      const errorMessage = error instanceof Error ? error.message : 'Unknown OpenAI error'
+
+      if (!retryable || attempt >= MAX_RETRY_ATTEMPTS) {
+        console.warn(`[Sprint4AI] request failed`, {
+          attempt,
+          maxAttempts: MAX_RETRY_ATTEMPTS,
+          retryable,
+          model,
+          error: errorMessage,
+        })
+        throw error
+      }
+
+      console.warn(`[Sprint4AI] request retry`, {
+        attempt,
+        maxAttempts: MAX_RETRY_ATTEMPTS,
+        model,
+        error: errorMessage,
+      })
+      await sleep(getRetryDelayMs(attempt))
+    }
   }
 
-  const data = await response.json()
-  const content = data.choices?.[0]?.message?.content?.trim() || ''
-  if (!content) {
-    throw new Error('OpenAI returned an empty response.')
-  }
-  return content
+  throw lastError || new Error('OpenAI request failed.')
 }
 
 export const callTextPrompt = async ({
