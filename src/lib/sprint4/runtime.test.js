@@ -472,6 +472,8 @@ test('root nodes emit a checkpoint MCQ after partial core understanding', async 
   assert.equal(rootNode.pendingMcqMode, 'checkpoint')
   assert.equal(rootNode.checkpointMcqCompleted, false)
   assert.ok(result.tutorMessage.metadata.mcq)
+  assert.doesNotMatch(result.tutorMessage.content, /Correct answer:/i)
+  assert.doesNotMatch(result.tutorMessage.content, new RegExp(result.tutorMessage.metadata.mcq.correctAnswer.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
 })
 
 test('dynamic nodes can emit a checkpoint MCQ after repeated partial struggle', async () => {

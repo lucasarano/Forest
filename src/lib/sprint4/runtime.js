@@ -1193,6 +1193,14 @@ const buildFallbackTutorContent = ({ node, decision, assessment, promptText }) =
   return `${lead} ${focus}\n\n${promptText}`.trim()
 }
 
+const buildMcqTutorContent = ({ node, decision }) => {
+  if (decision?.mcqMode === 'misconception') {
+    return `Let's do a quick check on ${node?.title || 'this idea'}. Choose the best answer below before we continue.`
+  }
+
+  return `Take this quick checkpoint on ${node?.title || 'this idea'}. Choose the best answer below.`
+}
+
 const plannerNode = async (state) => {
   const { session, activeNode, latestAssessment, seedConcept, decision } = state
   const skippedNodeTitles = (session.graphNodes || [])
@@ -1661,41 +1669,47 @@ const tutorNode = async (state) => {
   })
 
   let tutorContent
-  try {
-    tutorContent = await callTextPrompt({
-      systemPrompt: createGuidedTutorPrompt({
-        seedConcept,
+  if (mcqData) {
+    tutorContent = buildMcqTutorContent({
+      node: nextNode,
+      decision,
+    })
+  } else {
+    try {
+      tutorContent = await callTextPrompt({
+        systemPrompt: createGuidedTutorPrompt({
+          seedConcept,
+          node: nextNode,
+          decision,
+          assessment: latestAssessment,
+          recentMessages,
+          uploadedDocContext: getUploadedDocContext(session),
+        }),
+        messages: [{
+          role: 'user',
+          content: [
+            `Decision action: ${decision.nextAction}`,
+            `Use this node prompt when appropriate: ${promptText}`,
+            `If the learner just mastered a previous node, transition naturally into this next focus: ${nextNode.title}`,
+          ].filter(Boolean).join('\n'),
+        }],
+        temperature: 0.45,
+        maxCompletionTokens: 900,
+        model: MODEL_BY_CONTEXT.tutor,
+      })
+    } catch (error) {
+      tutorContent = buildFallbackTutorContent({
         node: nextNode,
         decision,
         assessment: latestAssessment,
-        recentMessages,
-        uploadedDocContext: getUploadedDocContext(session),
-      }),
-      messages: [{
-        role: 'user',
-        content: [
-          `Decision action: ${decision.nextAction}`,
-          `Use this node prompt when appropriate: ${promptText}`,
-          `If the learner just mastered a previous node, transition naturally into this next focus: ${nextNode.title}`,
-          mcqData ? `Present this as a multiple choice question instead of open-ended. Question: ${mcqData.question}\nOptions:\nA) ${mcqData.correctAnswer}\n${mcqData.distractors.map((d, i) => `${String.fromCharCode(66 + i)}) ${d.text}`).join('\n')}` : '',
-        ].filter(Boolean).join('\n'),
-      }],
-      temperature: 0.45,
-      maxCompletionTokens: 900,
-      model: MODEL_BY_CONTEXT.tutor,
-    })
-  } catch (error) {
-    tutorContent = buildFallbackTutorContent({
-      node: nextNode,
-      decision,
-      assessment: latestAssessment,
-      promptText,
-    })
-    log('tutorNode:fallback', {
-      nextNodeId: nextNode.id,
-      error: error instanceof Error ? error.message : 'Unknown tutor error',
-      decisionAction: decision.nextAction,
-    })
+        promptText,
+      })
+      log('tutorNode:fallback', {
+        nextNodeId: nextNode.id,
+        error: error instanceof Error ? error.message : 'Unknown tutor error',
+        decisionAction: decision.nextAction,
+      })
+    }
   }
 
   const tutorMessage = createMessage({
