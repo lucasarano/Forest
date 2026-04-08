@@ -7,14 +7,12 @@ import {
   CheckCircle2,
   Clock3,
   Loader,
-  MessageSquare,
   Mic,
   Pause,
   Play,
   Send,
   SkipForward,
   Sparkles,
-  TreePine,
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -137,19 +135,6 @@ const statusLabel = (status) => {
   return 'Locked'
 }
 
-const callFreeformLLM = async (messages) => {
-  const apiKey = import.meta.env.VITE_OPENAI_API_KEY
-  if (!apiKey) throw new Error('OpenAI API key not configured')
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({ model: 'gpt-4.1-mini', messages, max_tokens: 1024 }),
-  })
-  if (!res.ok) throw new Error(`LLM request failed: ${res.status}`)
-  const data = await res.json()
-  return data.choices?.[0]?.message?.content || ''
-}
-
 const INTAKE_COURSES = [
   'CS 1331 - Intro to OOP',
   'CS 1332 - Data Structures & Algorithms',
@@ -187,15 +172,6 @@ const MVPV2 = () => {
   const [selfReportRating, setSelfReportRating] = useState(0)
   const [selfReportText, setSelfReportText] = useState('')
   const [speechUsedForCurrent, setSpeechUsedForCurrent] = useState(false)
-
-  // Within-subject flow: guided → recap → freeform → evaluation → survey → summary
-  const [flowPhase, setFlowPhase] = useState(null) // null | 'guided_recap' | 'freeform'
-  const [guidedDurationMs, setGuidedDurationMs] = useState(0)
-  const [freeformMessages, setFreeformMessages] = useState([])
-  const [freeformInput, setFreeformInput] = useState('')
-  const [freeformTimeRemainingMs, setFreeformTimeRemainingMs] = useState(0)
-  const [freeformLoading, setFreeformLoading] = useState(false)
-  const freeformScrollRef = useRef(null)
 
   const snapshotRef = useRef(snapshot)
   snapshotRef.current = snapshot
@@ -253,7 +229,6 @@ const MVPV2 = () => {
 
   useEffect(() => {
     if (!snapshot?.session || snapshot.session.phase !== SPRINT4_PHASES.LEARNING) return undefined
-    if (flowPhase) return undefined
     if (paused) {
       if (!pausedAtRef.current) pausedAtRef.current = Date.now()
       return undefined
@@ -279,26 +254,22 @@ const MVPV2 = () => {
       setTimeRemainingMs(getTimeRemainingMs(current.session))
     }, 1000)
     return () => window.clearInterval(timer)
-  }, [snapshot?.session?.id, snapshot?.session?.phase, paused, flowPhase])
+  }, [snapshot?.session?.id, snapshot?.session?.phase, paused])
 
   useEffect(() => {
-    if (flowPhase) return
+    const token = sessionTokenRef.current
     const current = snapshotRef.current
-    if (!current?.session || current.session.phase !== SPRINT4_PHASES.LEARNING) return
+    if (!token || !current?.session || current.session.phase !== SPRINT4_PHASES.LEARNING) return
     if (timeRemainingMs > 0) return
-    const budget = current.session.timeBudgetMs || 0
-    setGuidedDurationMs(budget)
-    setFlowPhase('guided_recap')
-  }, [timeRemainingMs, flowPhase])
-
-  useEffect(() => {
-    if (flowPhase !== 'freeform') return undefined
-    if (freeformTimeRemainingMs <= 0) return undefined
-    const timer = window.setInterval(() => {
-      setFreeformTimeRemainingMs((prev) => Math.max(0, prev - 1000))
-    }, 1000)
-    return () => window.clearInterval(timer)
-  }, [flowPhase, freeformTimeRemainingMs])
+    void (async () => {
+      try {
+        const next = await advancePhase({ token, phase: SPRINT4_PHASES.EVALUATION })
+        setSnapshot(next.snapshot)
+      } catch (error) {
+        setPageError(error.message)
+      }
+    })()
+  }, [timeRemainingMs])
 
   useEffect(() => {
     if (chatScrollRef.current) chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight
@@ -422,74 +393,6 @@ const MVPV2 = () => {
       setLoading(false)
     }
   }
-
-  const handleFinishGuided = () => {
-    const session = snapshotRef.current?.session
-    const budget = session?.timeBudgetMs || 0
-    const remaining = getTimeRemainingMs(session)
-    setGuidedDurationMs(Math.max(budget - remaining, 60000))
-    setFlowPhase('guided_recap')
-  }
-
-  const handleStartFreeform = () => {
-    const seedConcept = snapshot?.studyConfig?.seedConcept || 'this concept'
-    setFreeformMessages([
-      {
-        id: 'system-init',
-        role: 'assistant',
-        content: `You're now in free-form mode. Ask me anything about **${seedConcept}** — I'll do my best to help you learn. There's no structure here; just chat naturally.`,
-      },
-    ])
-    setFreeformInput('')
-    setFreeformTimeRemainingMs(guidedDurationMs)
-    setFlowPhase('freeform')
-  }
-
-  const handleFreeformSend = async () => {
-    const text = freeformInput.trim()
-    if (!text || freeformLoading) return
-    const seedConcept = snapshot?.studyConfig?.seedConcept || 'this concept'
-    const userMsg = { id: `user-${Date.now()}`, role: 'user', content: text }
-    const updated = [...freeformMessages, userMsg]
-    setFreeformMessages(updated)
-    setFreeformInput('')
-    setFreeformLoading(true)
-    try {
-      const apiMessages = [
-        { role: 'system', content: `You are a helpful tutor for the concept "${seedConcept}". Teach conversationally. Use short sections and concrete examples. Stay focused on the seed concept unless the learner explicitly changes scope.` },
-        ...updated.filter((m) => m.role !== 'system' && m.id !== 'system-init').map((m) => ({ role: m.role, content: m.content })),
-      ]
-      const reply = await callFreeformLLM(apiMessages)
-      setFreeformMessages((prev) => [...prev, { id: `assistant-${Date.now()}`, role: 'assistant', content: reply }])
-    } catch (error) {
-      setPageError(error.message)
-    } finally {
-      setFreeformLoading(false)
-    }
-  }
-
-  const handleFinishFreeform = async () => {
-    setLoading(true)
-    setPageError('')
-    try {
-      const next = await advancePhase({ token: sessionToken, phase: SPRINT4_PHASES.EVALUATION })
-      setSnapshot(next.snapshot)
-      setFlowPhase(null)
-    } catch (error) {
-      setPageError(error.message)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  useEffect(() => {
-    if (freeformScrollRef.current) freeformScrollRef.current.scrollTop = freeformScrollRef.current.scrollHeight
-  }, [freeformMessages.length])
-
-  useEffect(() => {
-    if (flowPhase !== 'freeform' || freeformTimeRemainingMs > 0) return
-    void handleFinishFreeform()
-  }, [flowPhase, freeformTimeRemainingMs])
 
   const handleSubmitSurvey = async (event) => {
     event.preventDefault()
@@ -683,7 +586,7 @@ const MVPV2 = () => {
     )
   }
 
-  if (!flowPhase && snapshot?.session?.phase === SPRINT4_PHASES.LEARNING) {
+  if (snapshot?.session?.phase === SPRINT4_PHASES.LEARNING) {
     const lastMessage = visibleMessages[visibleMessages.length - 1]
     const mcqData = lastMessage?.metadata?.mcq
 
@@ -728,10 +631,12 @@ const MVPV2 = () => {
             </button>
             <button
               type="button"
-              onClick={handleFinishGuided}
+              onClick={() => advancePhase({ token: sessionToken, phase: SPRINT4_PHASES.EVALUATION })
+                .then((next) => setSnapshot(next.snapshot))
+                .catch((error) => setPageError(error.message))}
               className="px-3 py-1 rounded-lg text-xs border border-forest-border text-forest-light-gray hover:text-forest-emerald hover:border-forest-emerald/50 transition-colors"
             >
-              Finish guided
+              Finish early
             </button>
           </div>
         </div>
@@ -937,202 +842,6 @@ const MVPV2 = () => {
     )
   }
 
-  if (flowPhase === 'guided_recap') {
-    const nodes = snapshot?.session?.graphNodes || []
-    const mastered = nodes.filter((n) => ['mastered_independently', 'mastered_with_support'].includes(n.status)).length
-    const skipped = nodes.filter((n) => n.status === 'skipped').length
-    const totalTurns = snapshot?.session?.turnIndex || 0
-    return (
-      <div className="relative w-full h-screen overflow-hidden bg-forest-darker">
-        <div className="h-full overflow-y-auto">
-          <div className="mx-auto max-w-3xl px-5 pb-14 pt-8">
-            <div className="flex items-center gap-3 mb-8">
-              <Logo variant="full" />
-              <span className="text-[10px] uppercase tracking-[0.25em] text-forest-gray">Guided Session Complete</span>
-            </div>
-
-            <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}>
-              <div className="rounded-xl border border-forest-border bg-forest-card/40 p-6">
-                <div className="flex items-center gap-3">
-                  <div className="flex items-center justify-center w-10 h-10 rounded-full bg-forest-emerald/15 border border-forest-emerald/30">
-                    <TreePine size={20} className="text-forest-emerald" />
-                  </div>
-                  <div>
-                    <p className="text-[10px] uppercase tracking-[0.25em] text-forest-emerald font-semibold">Phase 1 Complete</p>
-                    <h1 className="text-2xl font-semibold text-white">Guided learning recap</h1>
-                  </div>
-                </div>
-                <p className="mt-3 text-sm text-forest-light-gray">
-                  You explored <span className="text-white font-medium">{snapshot?.studyConfig?.seedConcept}</span> through Forest's guided diagnostic flow.
-                </p>
-
-                <div className="mt-6 grid gap-3 sm:grid-cols-4">
-                  <div className="rounded-lg border border-forest-border bg-forest-darker/50 p-3 text-center">
-                    <p className="text-2xl font-semibold text-forest-emerald">{mastered}</p>
-                    <p className="text-[10px] uppercase tracking-[0.18em] text-forest-gray mt-1">Mastered</p>
-                  </div>
-                  <div className="rounded-lg border border-forest-border bg-forest-darker/50 p-3 text-center">
-                    <p className="text-2xl font-semibold text-white">{nodes.length}</p>
-                    <p className="text-[10px] uppercase tracking-[0.18em] text-forest-gray mt-1">Total Nodes</p>
-                  </div>
-                  <div className="rounded-lg border border-forest-border bg-forest-darker/50 p-3 text-center">
-                    <p className="text-2xl font-semibold text-white">{totalTurns}</p>
-                    <p className="text-[10px] uppercase tracking-[0.18em] text-forest-gray mt-1">Interactions</p>
-                  </div>
-                  <div className="rounded-lg border border-forest-border bg-forest-darker/50 p-3 text-center">
-                    <p className="text-2xl font-semibold text-white">{skipped}</p>
-                    <p className="text-[10px] uppercase tracking-[0.18em] text-forest-gray mt-1">Skipped</p>
-                  </div>
-                </div>
-
-                {nodes.length > 0 && (
-                  <div className="mt-6 h-[300px] rounded-xl overflow-hidden border border-forest-border">
-                    <DynamicConceptMap nodes={nodes} activeNodeId={snapshot?.session?.currentNodeId} />
-                  </div>
-                )}
-
-                <div className="mt-6 rounded-xl border border-forest-emerald/20 bg-forest-emerald/5 p-4">
-                  <div className="flex items-start gap-3">
-                    <MessageSquare size={18} className="text-forest-emerald mt-0.5 shrink-0" />
-                    <div>
-                      <p className="text-sm font-medium text-white">Next: free-form learning</p>
-                      <p className="mt-1 text-sm text-forest-light-gray">
-                        You'll now learn the same concept using a traditional LLM chat — no structure, no nodes, just conversation.
-                        You'll have <span className="text-white font-medium">{formatDuration(guidedDurationMs)}</span> (the same time you spent in guided mode).
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="mt-6">
-                  <Button onClick={handleStartFreeform} fullWidth>
-                    <span className="flex items-center justify-center gap-2">
-                      <ArrowRight size={16} />
-                      Continue to free-form learning
-                    </span>
-                  </Button>
-                </div>
-              </div>
-            </motion.div>
-          </div>
-        </div>
-        {pageError && <ErrorToast message={pageError} onDismiss={() => setPageError('')} />}
-      </div>
-    )
-  }
-
-  if (flowPhase === 'freeform') {
-    return (
-      <div className="relative w-full h-screen overflow-hidden bg-forest-darker flex flex-col">
-        <div className="flex-shrink-0 h-12 border-b border-forest-border bg-forest-card/50 flex items-center justify-between px-4 z-20">
-          <div className="flex items-center gap-3">
-            <Link to="/" className="flex items-center gap-2">
-              <Logo variant="full" />
-            </Link>
-            <span className="rounded-md bg-amber-500/10 border border-amber-500/30 px-2.5 py-0.5 text-[10px] uppercase tracking-[0.2em] text-amber-300 font-semibold">
-              Free-form
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className={`rounded-lg border px-3 py-1 text-xs font-medium flex items-center gap-1.5 ${
-              freeformTimeRemainingMs < 60000
-                ? 'border-red-500/50 bg-red-500/10 text-red-300'
-                : 'border-forest-border bg-forest-card text-forest-light-gray'
-            }`}>
-              <Clock3 size={13} />
-              {formatDuration(freeformTimeRemainingMs)}
-            </span>
-            <button
-              type="button"
-              onClick={handleFinishFreeform}
-              disabled={loading}
-              className="px-3 py-1 rounded-lg text-xs border border-forest-border text-forest-light-gray hover:text-forest-emerald hover:border-forest-emerald/50 transition-colors disabled:opacity-50"
-            >
-              Finish
-            </button>
-          </div>
-        </div>
-
-        <div className="flex-1 min-h-0 flex flex-col">
-          <div className="flex-shrink-0 border-b border-forest-border bg-forest-card/30 px-4 py-3">
-            <p className="text-[10px] uppercase tracking-[0.2em] text-amber-400 font-semibold">Free-form Learning</p>
-            <h2 className="text-lg font-semibold text-white mt-0.5">{snapshot?.studyConfig?.seedConcept}</h2>
-            <p className="text-xs text-forest-gray mt-1">Chat freely — ask questions, explore ideas, learn at your own pace.</p>
-          </div>
-
-          <div ref={freeformScrollRef} className="flex-1 overflow-y-auto min-h-0">
-            <div className="p-4 space-y-3">
-              {freeformMessages.map((message) => (
-                <div
-                  key={message.id}
-                  className={`rounded-xl px-4 py-3 animate-fade-in-up ${
-                    message.role === 'assistant'
-                      ? 'bg-forest-card/80 border border-forest-border'
-                      : 'bg-amber-500/10 border border-amber-500/30'
-                  }`}
-                >
-                  <p className="text-[10px] uppercase tracking-[0.2em] mb-1.5 font-semibold text-amber-400/70">
-                    {message.role === 'assistant' ? 'LLM' : 'You'}
-                  </p>
-                  <div className="prose prose-invert max-w-none text-sm">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
-                  </div>
-                </div>
-              ))}
-
-              <AnimatePresence>
-                {freeformLoading && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, scale: 0.98 }}
-                    className="rounded-xl px-4 py-3 bg-forest-card/80 flex items-center gap-1.5 w-fit"
-                  >
-                    <span className="flex gap-1">
-                      <span className="w-2 h-2 rounded-full bg-amber-400/80 animate-bounce" style={{ animationDelay: '0ms' }} />
-                      <span className="w-2 h-2 rounded-full bg-amber-400/80 animate-bounce" style={{ animationDelay: '150ms' }} />
-                      <span className="w-2 h-2 rounded-full bg-amber-400/80 animate-bounce" style={{ animationDelay: '300ms' }} />
-                    </span>
-                    <span className="text-xs text-forest-gray">Thinking...</span>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
-          </div>
-
-          <div className="flex-shrink-0 border-t border-forest-border bg-forest-card/50 p-3">
-            <form
-              onSubmit={(e) => { e.preventDefault(); void handleFreeformSend() }}
-              className="flex gap-2"
-            >
-              <textarea
-                value={freeformInput}
-                onChange={(e) => setFreeformInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void handleFreeformSend() }
-                }}
-                rows={2}
-                disabled={freeformLoading}
-                placeholder={`Ask about ${snapshot?.studyConfig?.seedConcept || 'the concept'}...`}
-                className="flex-1 px-4 py-2.5 bg-forest-darker border border-forest-border rounded-xl text-white text-sm placeholder-forest-gray focus:outline-none focus:border-amber-400 transition-colors disabled:opacity-60 resize-none"
-              />
-              <button
-                type="submit"
-                disabled={freeformLoading || !freeformInput.trim()}
-                className="px-4 py-2 bg-amber-500 text-forest-darker rounded-xl hover:brightness-110 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 text-sm font-medium self-end"
-              >
-                {freeformLoading ? <Loader size={14} className="animate-spin" /> : <Send size={14} />}
-                Send
-              </button>
-            </form>
-          </div>
-        </div>
-
-        {pageError && <ErrorToast message={pageError} onDismiss={() => setPageError('')} />}
-      </div>
-    )
-  }
-
   if (snapshot?.session?.phase === SPRINT4_PHASES.EVALUATION) {
     return (
       <div className="relative w-full h-screen overflow-hidden bg-forest-darker">
@@ -1182,159 +891,25 @@ const MVPV2 = () => {
     )
   }
 
-  if (snapshot?.session?.phase === SPRINT4_PHASES.SURVEY) {
-    return (
-      <div className="relative w-full h-screen overflow-hidden bg-forest-darker">
-        <div className="h-full overflow-y-auto">
-          <div className="mx-auto max-w-2xl px-5 pb-14 pt-8">
-            <div className="flex items-center gap-3 mb-8">
-              <Logo variant="full" />
-              <span className="text-[10px] uppercase tracking-[0.25em] text-forest-gray">Sprint 4 Survey</span>
-            </div>
-
-            <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}>
-              <div className="rounded-xl border border-forest-border bg-forest-card/40 p-6">
-                <p className="text-[10px] uppercase tracking-[0.25em] text-forest-emerald font-semibold">Session Survey</p>
-                <h1 className="mt-3 text-2xl font-semibold text-white">Short reflection</h1>
-
-                <form className="mt-6 space-y-5" onSubmit={handleSubmitSurvey}>
-                  {isSurveyPreview && (
-                    <div className="rounded-xl border border-forest-emerald/25 bg-forest-emerald/10 px-4 py-3 text-sm text-forest-light-gray">
-                      Preview mode: this shows the expanded Sprint 4 feedback form with the additional study columns. Finishing the form stays local to this browser session.
-                    </div>
-                  )}
-
-                  {SURVEY_FIELDS.map((field) => (
-                    <div key={field.key}>
-                      <p className="mb-2 text-sm text-white">{field.label}</p>
-                      <div className="flex flex-wrap gap-2">
-                        {RATING_VALUES.map((value) => (
-                          <button
-                            key={value}
-                            type="button"
-                            onClick={() => setSurvey((prev) => ({ ...prev, [field.key]: `${value}` }))}
-                            className={`rounded-lg border px-4 py-2 text-sm transition ${
-                              survey[field.key] === `${value}`
-                                ? 'border-forest-emerald/60 bg-forest-emerald/15 text-white'
-                                : 'border-forest-border bg-forest-card/50 text-forest-light-gray hover:border-forest-emerald/30'
-                            }`}
-                          >
-                            {value}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-
-                  {ADDITIONAL_SURVEY_FIELDS.map((field) => (
-                    <div key={field.key}>
-                      <p className="mb-2 text-sm text-white">{field.label}</p>
-                      <div className="flex flex-wrap gap-2">
-                        {RATING_VALUES.map((value) => (
-                          <button
-                            key={value}
-                            type="button"
-                            onClick={() => setSurvey((prev) => ({ ...prev, [field.key]: `${value}` }))}
-                            className={`rounded-lg border px-4 py-2 text-sm transition ${
-                              survey[field.key] === `${value}`
-                                ? 'border-forest-emerald/60 bg-forest-emerald/15 text-white'
-                                : 'border-forest-border bg-forest-card/50 text-forest-light-gray hover:border-forest-emerald/30'
-                            }`}
-                          >
-                            {value}
-                          </button>
-                        ))}
-                      </div>
-                      {(field.minLabel || field.maxLabel) && (
-                        <div className="mt-1.5 flex justify-between px-1 text-[10px] text-forest-gray">
-                          <span>{field.minLabel || ''}</span>
-                          <span>{field.maxLabel || ''}</span>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-
-                  <div>
-                    <p className="mb-2 text-sm text-white">Which modality felt best for this session?</p>
-                    <div className="grid gap-2 md:grid-cols-3">
-                      {PREFERRED_MODALITY_OPTIONS.map((option) => (
-                        <button
-                          key={option}
-                          type="button"
-                          onClick={() => setSurvey((prev) => ({ ...prev, preferredModality: option }))}
-                          className={`rounded-xl border px-4 py-3 text-left text-sm transition ${
-                            survey.preferredModality === option
-                              ? 'border-forest-emerald/60 bg-forest-emerald/15 text-white'
-                              : 'border-forest-border bg-forest-card/50 text-forest-light-gray hover:border-forest-emerald/30'
-                          }`}
-                        >
-                          {option}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div>
-                    <p className="mb-2 text-sm text-white">If you had to keep learning with one system, which would you prefer?</p>
-                    <div className="grid gap-2 md:grid-cols-3">
-                      {PREFERRED_SYSTEM_OPTIONS.map((option) => (
-                        <button
-                          key={option}
-                          type="button"
-                          onClick={() => setSurvey((prev) => ({ ...prev, preferredSystem: option }))}
-                          className={`rounded-xl border px-4 py-3 text-left text-sm transition ${
-                            survey.preferredSystem === option
-                              ? 'border-forest-emerald/60 bg-forest-emerald/15 text-white'
-                              : 'border-forest-border bg-forest-card/50 text-forest-light-gray hover:border-forest-emerald/30'
-                          }`}
-                        >
-                          {option}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div>
-                    <p className="mb-2 text-sm text-white">Anything notable about the experience?</p>
-                    <textarea
-                      value={survey.comment}
-                      onChange={(e) => setSurvey((prev) => ({ ...prev, comment: e.target.value }))}
-                      rows={3}
-                      className="w-full rounded-xl border border-forest-border bg-forest-darker/60 px-4 py-3 text-sm text-white outline-none transition focus:border-forest-emerald"
-                      placeholder="Optional comment."
-                    />
-                  </div>
-
-                  <Button type="submit" disabled={loading}>
-                    <span className="flex items-center gap-2">
-                      {loading ? <Loader size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
-                      Finish session
-                    </span>
-                  </Button>
-                </form>
-              </div>
-            </motion.div>
-          </div>
-        </div>
-        {pageError && <ErrorToast message={pageError} onDismiss={() => setPageError('')} />}
-      </div>
-    )
-  }
-
-  if (snapshot?.session?.phase === SPRINT4_PHASES.SUMMARY) {
+  if (snapshot?.session?.phase === SPRINT4_PHASES.SURVEY || snapshot?.session?.phase === SPRINT4_PHASES.SUMMARY) {
+    const isSurveyPending = snapshot.session.phase === SPRINT4_PHASES.SURVEY && !snapshot.session.surveyResponse
     return (
       <div className="relative w-full h-screen overflow-hidden bg-forest-darker">
         <div className="h-full overflow-y-auto">
           <div className="mx-auto max-w-4xl px-5 pb-14 pt-8">
             <div className="flex items-center gap-3 mb-8">
               <Logo variant="full" />
-              <span className="text-[10px] uppercase tracking-[0.25em] text-forest-gray">Sprint 4 Complete</span>
+              <span className="text-[10px] uppercase tracking-[0.25em] text-forest-gray">
+                {isSurveyPending ? 'Sprint 4 Results' : 'Sprint 4 Complete'}
+              </span>
             </div>
 
-            <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}>
+            <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
               <div className="rounded-xl border border-forest-border bg-forest-card/40 p-6">
                 <p className="text-[10px] uppercase tracking-[0.25em] text-forest-emerald font-semibold">Summary</p>
-                <h1 className="mt-3 text-2xl font-semibold text-white">Session complete</h1>
+                <h1 className="mt-3 text-2xl font-semibold text-white">
+                  {isSurveyPending ? 'Your results' : 'Session complete'}
+                </h1>
                 <div className="mt-4 flex flex-wrap gap-3 text-sm">
                   <span className="rounded-lg border border-forest-border bg-forest-card px-3 py-1 text-forest-light-gray">
                     {snapshot.studyConfig.seedConcept}
@@ -1360,22 +935,6 @@ const MVPV2 = () => {
                   </div>
                 )}
 
-                {snapshot.session.surveyResponse && (
-                  <div className="mt-6 rounded-xl border border-forest-border bg-forest-darker/50 p-4">
-                    <p className="text-[10px] uppercase tracking-[0.2em] text-forest-emerald/70 font-semibold mb-4">Feedback Snapshot</p>
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <SummaryMetric label="Clarity" value={snapshot.session.surveyResponse.clarity} />
-                      <SummaryMetric label="Confidence" value={snapshot.session.surveyResponse.confidence} />
-                      <SummaryMetric label="Usefulness" value={snapshot.session.surveyResponse.usefulness} />
-                      <SummaryMetric label="Understanding" value={snapshot.session.surveyResponse.perceivedUnderstanding} />
-                      <SummaryMetric label="Mental effort" value={snapshot.session.surveyResponse.mentalEffort} />
-                      <SummaryMetric label="Voice comfort" value={snapshot.session.surveyResponse.voiceComfort} />
-                      <SummaryMetric label="Preferred modality" value={snapshot.session.surveyResponse.preferredModality} />
-                      <SummaryMetric label="Preferred system" value={snapshot.session.surveyResponse.preferredSystem} />
-                    </div>
-                  </div>
-                )}
-
                 {isGuided && (
                   <div className="mt-6 h-[400px] rounded-xl overflow-hidden">
                     <DynamicConceptMap
@@ -1385,9 +944,148 @@ const MVPV2 = () => {
                   </div>
                 )}
               </div>
+
+              {isSurveyPending ? (
+                <div className="rounded-xl border border-forest-border bg-forest-card/40 p-6">
+                  <p className="text-[10px] uppercase tracking-[0.25em] text-forest-emerald font-semibold">Feedback</p>
+                  <h2 className="mt-3 text-xl font-semibold text-white">Short reflection</h2>
+                  <p className="mt-2 text-sm text-forest-light-gray">Before you go, tell us about your experience.</p>
+
+                  <form className="mt-6 space-y-5" onSubmit={handleSubmitSurvey}>
+                    {isSurveyPreview && (
+                      <div className="rounded-xl border border-forest-emerald/25 bg-forest-emerald/10 px-4 py-3 text-sm text-forest-light-gray">
+                        Preview mode: finishing the form stays local to this browser session.
+                      </div>
+                    )}
+
+                    {SURVEY_FIELDS.map((field) => (
+                      <div key={field.key}>
+                        <p className="mb-2 text-sm text-white">{field.label}</p>
+                        <div className="flex flex-wrap gap-2">
+                          {RATING_VALUES.map((value) => (
+                            <button
+                              key={value}
+                              type="button"
+                              onClick={() => setSurvey((prev) => ({ ...prev, [field.key]: `${value}` }))}
+                              className={`rounded-lg border px-4 py-2 text-sm transition ${
+                                survey[field.key] === `${value}`
+                                  ? 'border-forest-emerald/60 bg-forest-emerald/15 text-white'
+                                  : 'border-forest-border bg-forest-card/50 text-forest-light-gray hover:border-forest-emerald/30'
+                              }`}
+                            >
+                              {value}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+
+                    {ADDITIONAL_SURVEY_FIELDS.map((field) => (
+                      <div key={field.key}>
+                        <p className="mb-2 text-sm text-white">{field.label}</p>
+                        <div className="flex flex-wrap gap-2">
+                          {RATING_VALUES.map((value) => (
+                            <button
+                              key={value}
+                              type="button"
+                              onClick={() => setSurvey((prev) => ({ ...prev, [field.key]: `${value}` }))}
+                              className={`rounded-lg border px-4 py-2 text-sm transition ${
+                                survey[field.key] === `${value}`
+                                  ? 'border-forest-emerald/60 bg-forest-emerald/15 text-white'
+                                  : 'border-forest-border bg-forest-card/50 text-forest-light-gray hover:border-forest-emerald/30'
+                              }`}
+                            >
+                              {value}
+                            </button>
+                          ))}
+                        </div>
+                        {(field.minLabel || field.maxLabel) && (
+                          <div className="mt-1.5 flex justify-between px-1 text-[10px] text-forest-gray">
+                            <span>{field.minLabel || ''}</span>
+                            <span>{field.maxLabel || ''}</span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+
+                    <div>
+                      <p className="mb-2 text-sm text-white">Which modality felt best for this session?</p>
+                      <div className="grid gap-2 md:grid-cols-3">
+                        {PREFERRED_MODALITY_OPTIONS.map((option) => (
+                          <button
+                            key={option}
+                            type="button"
+                            onClick={() => setSurvey((prev) => ({ ...prev, preferredModality: option }))}
+                            className={`rounded-xl border px-4 py-3 text-left text-sm transition ${
+                              survey.preferredModality === option
+                                ? 'border-forest-emerald/60 bg-forest-emerald/15 text-white'
+                                : 'border-forest-border bg-forest-card/50 text-forest-light-gray hover:border-forest-emerald/30'
+                            }`}
+                          >
+                            {option}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <p className="mb-2 text-sm text-white">If you had to keep learning with one system, which would you prefer?</p>
+                      <div className="grid gap-2 md:grid-cols-3">
+                        {PREFERRED_SYSTEM_OPTIONS.map((option) => (
+                          <button
+                            key={option}
+                            type="button"
+                            onClick={() => setSurvey((prev) => ({ ...prev, preferredSystem: option }))}
+                            className={`rounded-xl border px-4 py-3 text-left text-sm transition ${
+                              survey.preferredSystem === option
+                                ? 'border-forest-emerald/60 bg-forest-emerald/15 text-white'
+                                : 'border-forest-border bg-forest-card/50 text-forest-light-gray hover:border-forest-emerald/30'
+                            }`}
+                          >
+                            {option}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <p className="mb-2 text-sm text-white">Anything notable about the experience?</p>
+                      <textarea
+                        value={survey.comment}
+                        onChange={(e) => setSurvey((prev) => ({ ...prev, comment: e.target.value }))}
+                        rows={3}
+                        className="w-full rounded-xl border border-forest-border bg-forest-darker/60 px-4 py-3 text-sm text-white outline-none transition focus:border-forest-emerald"
+                        placeholder="Optional comment."
+                      />
+                    </div>
+
+                    <Button type="submit" disabled={loading}>
+                      <span className="flex items-center gap-2">
+                        {loading ? <Loader size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
+                        Submit feedback
+                      </span>
+                    </Button>
+                  </form>
+                </div>
+              ) : snapshot.session.surveyResponse && (
+                <div className="rounded-xl border border-forest-border bg-forest-card/40 p-6">
+                  <p className="text-[10px] uppercase tracking-[0.2em] text-forest-emerald font-semibold mb-4">Feedback Snapshot</p>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <SummaryMetric label="Clarity" value={snapshot.session.surveyResponse.clarity} />
+                    <SummaryMetric label="Confidence" value={snapshot.session.surveyResponse.confidence} />
+                    <SummaryMetric label="Usefulness" value={snapshot.session.surveyResponse.usefulness} />
+                    <SummaryMetric label="Understanding" value={snapshot.session.surveyResponse.perceivedUnderstanding} />
+                    <SummaryMetric label="Mental effort" value={snapshot.session.surveyResponse.mentalEffort} />
+                    <SummaryMetric label="Voice comfort" value={snapshot.session.surveyResponse.voiceComfort} />
+                    <SummaryMetric label="Preferred modality" value={snapshot.session.surveyResponse.preferredModality} />
+                    <SummaryMetric label="Preferred system" value={snapshot.session.surveyResponse.preferredSystem} />
+                  </div>
+                </div>
+              )}
             </motion.div>
           </div>
         </div>
+        {pageError && <ErrorToast message={pageError} onDismiss={() => setPageError('')} />}
       </div>
     )
   }
