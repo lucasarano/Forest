@@ -4,6 +4,7 @@ import {
   countSessionsByStudyConfig,
   createSessionRecord,
   createStudyConfigRecord,
+  ensureBuiltinStudyConfigRecord,
   getSessionByToken,
   getStudyConfig,
   listSessions,
@@ -30,9 +31,27 @@ const log = (tag, ...args) => {
   console.log(`[${ts}] [${tag}]`, ...args)
 }
 
-const PORT = Number(process.env.SPRINT4_SERVER_PORT || 4001)
+const PORT = Number(process.env.PORT || process.env.SPRINT4_SERVER_PORT || 4001)
 const ADMIN_PASSWORD = process.env.MVP_ADMIN_PASSWORD || 'admin12345'
 const OPENAI_API_BASE = 'https://api.openai.com/v1'
+const DEFAULT_ALLOWED_ORIGINS = [
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  'http://localhost:4173',
+  'http://127.0.0.1:4173',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'https://forest-mockup.vercel.app',
+  'https://forest-mockup-cobilanding.vercel.app',
+  'https://forest-mockup-lucasarano-cobilanding.vercel.app',
+]
+const ALLOWED_ORIGINS = new Set(
+  `${process.env.ALLOWED_ORIGINS || ''}`
+    .split(/[\s,]+/)
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .concat(!process.env.ALLOWED_ORIGINS ? DEFAULT_ALLOWED_ORIGINS : [])
+)
 
 const getApiKey = () => {
   const key = process.env.OPENAI_API_KEY || process.env.VITE_OPENAI_API_KEY || ''
@@ -40,14 +59,22 @@ const getApiKey = () => {
   return key
 }
 
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
+const getCorsHeaders = (origin = '') => {
+  const headers = {
   'Access-Control-Allow-Headers': 'content-type',
   'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    Vary: 'Origin',
+  }
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    headers['Access-Control-Allow-Origin'] = origin
+  }
+  return headers
 }
 
-const sendJson = (response, statusCode, payload) => {
-  response.writeHead(statusCode, { 'Content-Type': 'application/json', ...CORS_HEADERS })
+const isAllowedOrigin = (origin = '') => !origin || ALLOWED_ORIGINS.has(origin)
+
+const sendJson = (response, statusCode, payload, origin = '') => {
+  response.writeHead(statusCode, { 'Content-Type': 'application/json', ...getCorsHeaders(origin) })
   response.end(JSON.stringify(payload))
 }
 
@@ -102,9 +129,11 @@ const chooseCondition = ({ guided, control }) => {
 }
 
 const resolveStudyConfig = async (studyConfigId) => {
+  if (studyConfigId === BUILTIN_STUDY_ID) {
+    return ensureBuiltinStudyConfigRecord(getBuiltinStudyConfigRecord())
+  }
   const stored = await getStudyConfig(studyConfigId)
   if (stored) return stored
-  if (studyConfigId === BUILTIN_STUDY_ID) return getBuiltinStudyConfigRecord()
   return null
 }
 
@@ -154,24 +183,26 @@ const requireAdmin = (password) => {
 }
 
 const server = createServer(async (request, response) => {
-  if (!request.url) { sendJson(response, 400, { error: 'Missing URL.' }); return }
-  if (request.method === 'OPTIONS') { sendJson(response, 200, { ok: true }); return }
+  const origin = typeof request.headers.origin === 'string' ? request.headers.origin : ''
+  if (!request.url) { sendJson(response, 400, { error: 'Missing URL.' }, origin); return }
+  if (!isAllowedOrigin(origin)) { sendJson(response, 403, { error: 'Origin not allowed.' }, origin); return }
+  if (request.method === 'OPTIONS') { sendJson(response, 200, { ok: true }, origin); return }
 
   try {
     const url = new URL(request.url, `http://${request.headers.host}`)
 
     if (request.method === 'GET' && url.pathname === '/api/sprint4/health') {
-      sendJson(response, 200, { ok: true, port: PORT }); return
+      sendJson(response, 200, { ok: true, port: PORT }, origin); return
     }
 
-    if (request.method !== 'POST') { sendJson(response, 405, { error: 'Method not allowed.' }); return }
+    if (request.method !== 'POST') { sendJson(response, 405, { error: 'Method not allowed.' }, origin); return }
 
     const isMultipart = (request.headers['content-type'] || '').includes('multipart/form-data')
 
     if (url.pathname === '/api/sprint4/transcribe') {
       const parts = await parseMultipart(request)
       const audioPart = parts.find((p) => p.name === 'file' || p.filename)
-      if (!audioPart) { sendJson(response, 400, { error: 'No audio file provided.' }); return }
+      if (!audioPart) { sendJson(response, 400, { error: 'No audio file provided.' }, origin); return }
 
       const formData = new FormData()
       formData.append('file', new Blob([audioPart.data]), audioPart.filename || 'audio.webm')
@@ -187,7 +218,7 @@ const server = createServer(async (request, response) => {
         throw new Error(err.error?.message || `Whisper failed (${whisperRes.status})`)
       }
       const result = await whisperRes.json()
-      sendJson(response, 200, { text: result.text || '' })
+      sendJson(response, 200, { text: result.text || '' }, origin)
       return
     }
 
@@ -195,11 +226,11 @@ const server = createServer(async (request, response) => {
       const parts = await parseMultipart(request)
       const filePart = parts.find((p) => p.name === 'file' || p.filename)
       const tokenPart = parts.find((p) => p.name === 'token')
-      if (!filePart || !tokenPart) { sendJson(response, 400, { error: 'Missing file or token.' }); return }
+      if (!filePart || !tokenPart) { sendJson(response, 400, { error: 'Missing file or token.' }, origin); return }
 
       const token = tokenPart.data.toString('utf8').trim()
       const existing = await getSessionByToken(token)
-      if (!existing) { sendJson(response, 401, { error: 'Session not found.' }); return }
+      if (!existing) { sendJson(response, 401, { error: 'Session not found.' }, origin); return }
 
       const filename = filePart.filename || 'upload.txt'
       let extractedText = ''
@@ -232,7 +263,7 @@ const server = createServer(async (request, response) => {
         updatedAt: new Date().toISOString(),
       }))
 
-      sendJson(response, 200, { document: { id: docRecord.id, filename: docRecord.filename }, snapshot: await getSnapshot(next) })
+      sendJson(response, 200, { document: { id: docRecord.id, filename: docRecord.filename }, snapshot: await getSnapshot(next) }, origin)
       return
     }
 
@@ -242,7 +273,7 @@ const server = createServer(async (request, response) => {
       requireAdmin(body.password)
       const seedConcept = `${body.seedConcept || ''}`.trim()
       const timeBudgetMs = Number.isFinite(body.timeBudgetMs) ? Number(body.timeBudgetMs) : 8 * 60 * 1000
-      if (!seedConcept) { sendJson(response, 400, { error: 'seedConcept is required.' }); return }
+      if (!seedConcept) { sendJson(response, 400, { error: 'seedConcept is required.' }, origin); return }
 
       const artifacts = await generateStudyArtifacts(seedConcept)
       const record = await createStudyConfigRecord({
@@ -251,7 +282,7 @@ const server = createServer(async (request, response) => {
         graphNodes: artifacts.graphNodes, evaluationBundle: artifacts.evaluationBundle,
       })
 
-      sendJson(response, 200, { studyConfigId: record.id, evaluationBundleId: `${record.id}:evaluation`, studyConfig: record })
+      sendJson(response, 200, { studyConfigId: record.id, evaluationBundleId: `${record.id}:evaluation`, studyConfig: record }, origin)
       return
     }
 
@@ -284,7 +315,7 @@ const server = createServer(async (request, response) => {
           evaluationCompletedAt: s.evaluationCompletedAt, surveyCompletedAt: s.surveyCompletedAt,
           timeBudgetMs: s.timeBudgetMs,
         })),
-      })
+      }, origin)
       return
     }
 
@@ -292,25 +323,25 @@ const server = createServer(async (request, response) => {
       const studyConfigId = `${body.studyConfigId || ''}`
       log('SESSION:START', `studyConfigId="${studyConfigId}" requestedCondition="${body.condition || ''}"`)
       const studyConfig = await resolveStudyConfig(studyConfigId)
-      if (!studyConfig) { log('SESSION:ERR', 'study config not found'); sendJson(response, 404, { error: 'Study config not found.' }); return }
+      if (!studyConfig) { log('SESSION:ERR', 'study config not found'); sendJson(response, 404, { error: 'Study config not found.' }, origin); return }
 
       const requestedCondition = `${body.condition || ''}`.trim()
       let condition
       if (requestedCondition === 'guided') condition = SPRINT4_CONDITIONS.GUIDED
       else if (requestedCondition === 'control') condition = SPRINT4_CONDITIONS.CONTROL
       else {
-        const counts = await countSessionsByStudyConfig(studyConfigId)
+        const counts = await countSessionsByStudyConfig(studyConfig.id)
         condition = chooseCondition(counts)
       }
       const sessionToken = crypto.randomUUID()
-      const snapshot = createInitialSessionSnapshot({ studyConfigId, studyConfig, condition })
+      const snapshot = createInitialSessionSnapshot({ studyConfigId: studyConfig.id, studyConfig, condition })
       const now = new Date().toISOString()
       const session = { ...snapshot, id: crypto.randomUUID(), createdAt: now, updatedAt: now, lastActiveAt: now }
 
       log('SESSION:CREATED', `condition=${condition} currentNodeId="${session.currentNodeId}" nodes(${session.graphNodes?.length}):`, (session.graphNodes || []).map(n => `${n.id}[${n.status}]`).join(' | '))
 
-      await createSessionRecord({ studyConfigId, sessionToken, session })
-      sendJson(response, 200, { sessionToken, snapshot: await getSnapshot(session) })
+      const persisted = await createSessionRecord({ sessionToken, session })
+      sendJson(response, 200, { sessionToken, snapshot: await getSnapshot(persisted) }, origin)
       return
     }
 
@@ -319,11 +350,11 @@ const server = createServer(async (request, response) => {
       const rating = Number(body.rating)
       const text = `${body.text || ''}`.trim()
       const existing = await getSessionByToken(token)
-      if (!existing) { sendJson(response, 401, { error: 'Session not found.' }); return }
-      if (!Number.isInteger(rating) || rating < 1 || rating > 5) { sendJson(response, 400, { error: 'rating must be 1-5.' }); return }
+      if (!existing) { sendJson(response, 401, { error: 'Session not found.' }, origin); return }
+      if (!Number.isInteger(rating) || rating < 1 || rating > 5) { sendJson(response, 400, { error: 'rating must be 1-5.' }, origin); return }
 
       const studyConfig = await resolveStudyConfig(existing.studyConfigId)
-      if (!studyConfig) { sendJson(response, 404, { error: 'Study config not found.' }); return }
+      if (!studyConfig) { sendJson(response, 404, { error: 'Study config not found.' }, origin); return }
 
       const firstNode = existing.graphNodes?.[0] || null
       const initialMessages = buildInitialLearningMessages({ studyConfig, firstNode, condition: existing.condition })
@@ -342,7 +373,7 @@ const server = createServer(async (request, response) => {
         updatedAt: now, lastActiveAt: now,
       }))
 
-      sendJson(response, 200, { sessionToken: token, snapshot: await getSnapshot(next) })
+      sendJson(response, 200, { sessionToken: token, snapshot: await getSnapshot(next) }, origin)
       return
     }
 
@@ -352,7 +383,7 @@ const server = createServer(async (request, response) => {
       const reason = `${body.reason || ''}`.trim()
       log('SKIP:START', `nodeId="${nodeId}" reason="${reason}"`)
       const existing = await getSessionByToken(token)
-      if (!existing) { sendJson(response, 401, { error: 'Session not found.' }); return }
+      if (!existing) { sendJson(response, 401, { error: 'Session not found.' }, origin); return }
 
       let graphNodes = (existing.graphNodes || []).map((n) =>
         n.id === nodeId ? { ...n, status: NODE_STATES.SKIPPED } : n
@@ -373,7 +404,7 @@ const server = createServer(async (request, response) => {
         updatedAt: new Date().toISOString(), lastActiveAt: new Date().toISOString(),
       }))
 
-      sendJson(response, 200, { snapshot: await getSnapshot(next) })
+      sendJson(response, 200, { snapshot: await getSnapshot(next) }, origin)
       return
     }
 
@@ -381,7 +412,7 @@ const server = createServer(async (request, response) => {
       const token = `${body.token || ''}`
       const clientEvents = Array.isArray(body.events) ? body.events : []
       const existing = await getSessionByToken(token)
-      if (!existing) { sendJson(response, 401, { error: 'Session not found.' }); return }
+      if (!existing) { sendJson(response, 401, { error: 'Session not found.' }, origin); return }
 
       const next = await updateSession(token, (current) => {
         const metrics = { ...(current.metrics || {}) }
@@ -404,16 +435,16 @@ const server = createServer(async (request, response) => {
         }
       })
 
-      sendJson(response, 200, { ok: true })
+      sendJson(response, 200, { ok: true }, origin)
       return
     }
 
     if (url.pathname === '/api/sprint4/get-session') {
       const token = `${body.token || ''}`
       const existing = await getSessionByToken(token)
-      if (!existing) { sendJson(response, 401, { error: 'Session not found or token is invalid.' }); return }
+      if (!existing) { sendJson(response, 401, { error: 'Session not found or token is invalid.' }, origin); return }
       const session = await updateSession(token, (current) => ({ ...current, lastActiveAt: new Date().toISOString() }))
-      sendJson(response, 200, { snapshot: await getSnapshot(session) })
+      sendJson(response, 200, { snapshot: await getSnapshot(session) }, origin)
       return
     }
 
@@ -428,9 +459,9 @@ const server = createServer(async (request, response) => {
       log('TURN:START', `turn request | activeNodeId="${activeNodeId}" helpRequested=${helpRequested} userMsg="${userMessage.slice(0, 120)}"`)
 
       const existing = await getSessionByToken(token)
-      if (!existing) { log('TURN:ERR', 'session not found'); sendJson(response, 401, { error: 'Session not found.' }); return }
+      if (!existing) { log('TURN:ERR', 'session not found'); sendJson(response, 401, { error: 'Session not found.' }, origin); return }
       const studyConfig = await resolveStudyConfig(existing.studyConfigId)
-      if (!studyConfig) { log('TURN:ERR', 'study config not found'); sendJson(response, 404, { error: 'Study config not found.' }); return }
+      if (!studyConfig) { log('TURN:ERR', 'study config not found'); sendJson(response, 404, { error: 'Study config not found.' }, origin); return }
 
       log('TURN:SESSION', `condition=${existing.condition} phase=${existing.phase} turnIndex=${existing.turnIndex} currentNodeId="${existing.currentNodeId}"`)
       log('TURN:GRAPH_BEFORE', `nodes(${existing.graphNodes?.length}):`, (existing.graphNodes || []).map(n => `${n.id}[${n.status}|prompt=${n.promptKind}|parents=${(n.parentIds||[]).join(',')}]`).join(' | '))
@@ -480,7 +511,7 @@ const server = createServer(async (request, response) => {
         phase: persisted.phase,
         timeRemainingMs: getTimeRemainingMs(persisted),
         snapshot,
-      })
+      }, origin)
       return
     }
 
@@ -488,7 +519,7 @@ const server = createServer(async (request, response) => {
       const token = `${body.token || ''}`
       const phase = `${body.phase || ''}`
       const existing = await getSessionByToken(token)
-      if (!existing) { sendJson(response, 401, { error: 'Session not found.' }); return }
+      if (!existing) { sendJson(response, 401, { error: 'Session not found.' }, origin); return }
 
       const next = await updateSession(token, (current) => ({
         ...current, phase,
@@ -496,7 +527,7 @@ const server = createServer(async (request, response) => {
         updatedAt: new Date().toISOString(), lastActiveAt: new Date().toISOString(),
       }))
 
-      sendJson(response, 200, { sessionToken: token, snapshot: await getSnapshot(next) })
+      sendJson(response, 200, { sessionToken: token, snapshot: await getSnapshot(next) }, origin)
       return
     }
 
@@ -504,9 +535,9 @@ const server = createServer(async (request, response) => {
       const token = `${body.token || ''}`
       const answers = Array.isArray(body.answers) ? body.answers : []
       const existing = await getSessionByToken(token)
-      if (!existing) { sendJson(response, 401, { error: 'Session not found.' }); return }
+      if (!existing) { sendJson(response, 401, { error: 'Session not found.' }, origin); return }
       const studyConfig = await resolveStudyConfig(existing.studyConfigId)
-      if (!studyConfig) { sendJson(response, 404, { error: 'Study config not found.' }); return }
+      if (!studyConfig) { sendJson(response, 404, { error: 'Study config not found.' }, origin); return }
 
       const scores = await scoreEvaluationAnswers({ studyConfig, answers })
       const next = await updateSession(token, (current) => ({
@@ -516,7 +547,7 @@ const server = createServer(async (request, response) => {
         updatedAt: new Date().toISOString(), lastActiveAt: new Date().toISOString(),
       }))
 
-      sendJson(response, 200, { sessionToken: token, snapshot: await getSnapshot(next) })
+      sendJson(response, 200, { sessionToken: token, snapshot: await getSnapshot(next) }, origin)
       return
     }
 
@@ -524,8 +555,8 @@ const server = createServer(async (request, response) => {
       const token = `${body.token || ''}`
       const survey = body.survey && typeof body.survey === 'object' ? body.survey : null
       const existing = await getSessionByToken(token)
-      if (!existing) { sendJson(response, 401, { error: 'Session not found.' }); return }
-      if (!survey) { sendJson(response, 400, { error: 'survey is required.' }); return }
+      if (!existing) { sendJson(response, 401, { error: 'Session not found.' }, origin); return }
+      if (!survey) { sendJson(response, 400, { error: 'survey is required.' }, origin); return }
 
       const next = await updateSession(token, (current) => ({
         ...current, surveyResponse: survey, surveyCompletedAt: new Date().toISOString(),
@@ -533,20 +564,20 @@ const server = createServer(async (request, response) => {
         updatedAt: new Date().toISOString(), lastActiveAt: new Date().toISOString(),
       }))
 
-      sendJson(response, 200, { sessionToken: token, snapshot: await getSnapshot(next) })
+      sendJson(response, 200, { sessionToken: token, snapshot: await getSnapshot(next) }, origin)
       return
     }
 
-    sendJson(response, 404, { error: 'Route not found.' })
+    sendJson(response, 404, { error: 'Route not found.' }, origin)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error.'
     const statusCode = message === 'Invalid admin password.' ? 401 : 500
     log('ERROR', `${request.method} ${request.url} → ${statusCode}: ${message}`)
     if (error instanceof Error && error.stack) log('ERROR:STACK', error.stack)
-    sendJson(response, statusCode, { error: message })
+    sendJson(response, statusCode, { error: message }, origin)
   }
 })
 
 server.listen(PORT, () => {
-  console.log(`Sprint 4 LangGraph server listening on http://localhost:${PORT}`)
+  console.log(`Sprint 4 LangGraph server listening on port ${PORT}`)
 })

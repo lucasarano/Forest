@@ -25,10 +25,17 @@ Deno.serve(async (request) => {
         status: session.status,
         current_node_id: session.currentNodeId,
         turn_index: session.turnIndex || 0,
+        started_at: session.startedAt || null,
         learning_completed_at: session.learningCompletedAt,
         evaluation_completed_at: session.evaluationCompletedAt,
         survey_completed_at: session.surveyCompletedAt,
         time_budget_ms: session.timeBudgetMs,
+        instrumentation_version: session.instrumentationVersion || null,
+        self_report: session.selfReport || null,
+        metrics: session.metrics || {},
+        uploaded_documents: session.uploadedDocuments || [],
+        evaluation_overall_score: Number.isFinite(session.evaluationOverallScore) ? session.evaluationOverallScore : 0,
+        evaluation_summary: session.evaluationSummary || '',
         last_active_at: now,
       })
       .eq('id', existingSession.id)
@@ -60,6 +67,11 @@ Deno.serve(async (request) => {
           rubric: node.rubric || {},
           prompt_pack: node.promptPack || {},
           is_root: !!node.isRoot,
+          node_type: node.nodeType || '',
+          simple_good_turn_count: node.simpleGoodTurnCount || 0,
+          clarification_depth: node.clarificationDepth || 0,
+          derived_from_topic: node.derivedFromTopic || '',
+          last_mcq_at_attempt: node.lastMcqAtAttempt || 0,
         })), { onConflict: 'session_id,node_id' })
 
       if (error) throw error
@@ -122,10 +134,56 @@ Deno.serve(async (request) => {
       if (error) throw error
     }
 
+    const evaluationAnswers = Array.isArray(session.evaluationAnswers) ? session.evaluationAnswers : []
+    if (evaluationAnswers.length) {
+      const { error } = await supabase
+        .from('mvp_v2_evaluation_answers')
+        .upsert(evaluationAnswers.map((answer: any) => ({
+          session_id: existingSession.id,
+          prompt_id: answer.promptId,
+          answer: answer.answer || '',
+          created_at: answer.createdAt || now,
+          updated_at: answer.updatedAt || now,
+        })), { onConflict: 'session_id,prompt_id' })
+
+      if (error) throw error
+    }
+
+    const evaluationScores = Array.isArray(session.evaluationScores) ? session.evaluationScores : []
+    if (evaluationScores.length) {
+      const { error } = await supabase
+        .from('mvp_v2_evaluation_scores')
+        .upsert(evaluationScores.map((score: any) => ({
+          session_id: existingSession.id,
+          prompt_id: score.promptId,
+          score: score.score || 0,
+          rationale: score.rationale || '',
+          strengths: score.strengths || [],
+          gaps: score.gaps || [],
+          overall_score: Number.isFinite(score.overallScore) ? score.overallScore : 0,
+          summary: score.summary || '',
+          created_at: score.createdAt || now,
+          updated_at: score.updatedAt || now,
+        })), { onConflict: 'session_id,prompt_id' })
+
+      if (error) throw error
+    }
+
+    if (session.surveyResponse && typeof session.surveyResponse === 'object') {
+      const { error } = await supabase
+        .from('mvp_v2_survey_responses')
+        .upsert({
+          session_id: existingSession.id,
+          responses: session.surveyResponse,
+          updated_at: now,
+        }, { onConflict: 'session_id' })
+
+      if (error) throw error
+    }
+
     const refreshed = await loadSnapshot(supabase, existingSession.id)
     return json({ success: true, snapshot: refreshed })
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : 'Unknown error.' }, 500)
   }
 })
-

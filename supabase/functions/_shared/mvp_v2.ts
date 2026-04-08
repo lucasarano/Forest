@@ -33,6 +33,7 @@ export const mapStudyConfig = (row: Record<string, any>) => ({
   seedConcept: row.seed_concept,
   conceptSummary: row.concept_summary,
   timeBudgetMs: row.time_budget_ms,
+  graphModel: row.graph_model || 'legacy',
   graphNodes: Array.isArray(row.planner_graph) ? row.planner_graph : [],
   evaluationBundle: row.evaluation_bundle || {},
   createdAt: row.created_at,
@@ -54,6 +55,11 @@ export const mapSession = (row: Record<string, any>) => ({
   timeBudgetMs: row.time_budget_ms,
   instrumentationVersion: row.instrumentation_version,
   lastActiveAt: row.last_active_at,
+  selfReport: row.self_report || null,
+  uploadedDocuments: Array.isArray(row.uploaded_documents) ? row.uploaded_documents : [],
+  metrics: row.metrics || {},
+  evaluationOverallScore: typeof row.evaluation_overall_score === 'number' ? row.evaluation_overall_score : 0,
+  evaluationSummary: row.evaluation_summary || '',
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 })
@@ -78,6 +84,11 @@ export const mapGraphNode = (row: Record<string, any>) => ({
   rubric: row.rubric || {},
   promptPack: row.prompt_pack || {},
   isRoot: !!row.is_root,
+  nodeType: row.node_type || '',
+  simpleGoodTurnCount: typeof row.simple_good_turn_count === 'number' ? row.simple_good_turn_count : 0,
+  clarificationDepth: typeof row.clarification_depth === 'number' ? row.clarification_depth : 0,
+  derivedFromTopic: row.derived_from_topic || '',
+  lastMcqAtAttempt: typeof row.last_mcq_at_attempt === 'number' ? row.last_mcq_at_attempt : 0,
 })
 
 export const mapEvidenceRecord = (row: Record<string, any>) => ({
@@ -148,13 +159,12 @@ export const requireSessionByToken = async (supabase: any, token: string) => {
 }
 
 export const loadSnapshot = async (supabase: any, sessionId: string) => {
-  const [sessionRes, graphRes, evidenceRes, messageRes, eventRes, studyConfigRes, evaluationAnswersRes, evaluationScoresRes, surveyRes] = await Promise.all([
+  const [sessionRes, graphRes, evidenceRes, messageRes, eventRes, evaluationAnswersRes, evaluationScoresRes, surveyRes] = await Promise.all([
     supabase.from('mvp_v2_sessions').select('*').eq('id', sessionId).single(),
     supabase.from('mvp_v2_graph_nodes').select('*').eq('session_id', sessionId).order('order_index', { ascending: true }),
     supabase.from('mvp_v2_evidence_records').select('*').eq('session_id', sessionId).order('turn_index', { ascending: true }),
     supabase.from('mvp_v2_messages').select('*').eq('session_id', sessionId).order('created_at', { ascending: true }),
     supabase.from('mvp_v2_events').select('*').eq('session_id', sessionId).order('created_at', { ascending: true }),
-    supabase.from('mvp_v2_sessions').select('study_config_id').eq('id', sessionId).single(),
     supabase.from('mvp_v2_evaluation_answers').select('*').eq('session_id', sessionId).order('created_at', { ascending: true }),
     supabase.from('mvp_v2_evaluation_scores').select('*').eq('session_id', sessionId).order('created_at', { ascending: true }),
     supabase.from('mvp_v2_survey_responses').select('*').eq('session_id', sessionId).maybeSingle(),
@@ -165,7 +175,6 @@ export const loadSnapshot = async (supabase: any, sessionId: string) => {
   if (evidenceRes.error) throw new Error(evidenceRes.error.message)
   if (messageRes.error) throw new Error(messageRes.error.message)
   if (eventRes.error) throw new Error(eventRes.error.message)
-  if (studyConfigRes.error || !studyConfigRes.data) throw new Error(studyConfigRes.error?.message || 'Could not load study config.')
   if (evaluationAnswersRes.error) throw new Error(evaluationAnswersRes.error.message)
   if (evaluationScoresRes.error) throw new Error(evaluationScoresRes.error.message)
   if (surveyRes.error) throw new Error(surveyRes.error.message)
@@ -173,7 +182,7 @@ export const loadSnapshot = async (supabase: any, sessionId: string) => {
   const { data: studyConfigRow, error: studyConfigError } = await supabase
     .from('mvp_v2_study_configs')
     .select('*')
-    .eq('id', studyConfigRes.data.study_config_id)
+    .eq('id', sessionRes.data.study_config_id)
     .single()
 
   if (studyConfigError || !studyConfigRow) throw new Error(studyConfigError?.message || 'Could not load study config.')
@@ -182,6 +191,7 @@ export const loadSnapshot = async (supabase: any, sessionId: string) => {
     studyConfig: mapStudyConfig(studyConfigRow),
     session: {
       ...mapSession(sessionRes.data),
+      graphModel: studyConfigRow.graph_model || 'legacy',
       graphNodes: (graphRes.data || []).map(mapGraphNode),
       evidenceRecords: (evidenceRes.data || []).map(mapEvidenceRecord),
       messages: (messageRes.data || []).map(mapMessage),
@@ -192,4 +202,3 @@ export const loadSnapshot = async (supabase: any, sessionId: string) => {
     },
   }
 }
-
