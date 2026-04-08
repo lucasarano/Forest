@@ -47,11 +47,84 @@ const formatDuration = (ms) => {
   return `${minutes}:${String(seconds).padStart(2, '0')}`
 }
 
+const RATING_VALUES = [1, 2, 3, 4, 5]
+
 const SURVEY_FIELDS = [
   { key: 'clarity', label: 'This learning experience made the concept clear.' },
   { key: 'confidence', label: 'I finished with stronger confidence in my understanding.' },
   { key: 'usefulness', label: 'The feedback felt useful rather than generic.' },
 ]
+
+const ADDITIONAL_SURVEY_FIELDS = [
+  {
+    key: 'perceivedUnderstanding',
+    label: 'I leave this session feeling that I understand the concept well.',
+  },
+  {
+    key: 'mentalEffort',
+    label: 'How mentally effortful did this session feel?',
+    minLabel: 'Light',
+    maxLabel: 'Intense',
+  },
+  {
+    key: 'voiceComfort',
+    label: 'How comfortable did you feel using voice input during the session?',
+    minLabel: 'Not comfortable',
+    maxLabel: 'Very comfortable',
+  },
+]
+
+const PREFERRED_MODALITY_OPTIONS = ['Text', 'Voice', 'Voice + Text']
+const PREFERRED_SYSTEM_OPTIONS = ['Forest', 'Traditional LLM', 'No preference']
+const REQUIRED_SURVEY_KEYS = [
+  ...SURVEY_FIELDS.map((field) => field.key),
+  ...ADDITIONAL_SURVEY_FIELDS.map((field) => field.key),
+  'preferredModality',
+  'preferredSystem',
+]
+
+const createDefaultSurveyState = () => ({
+  clarity: '',
+  confidence: '',
+  usefulness: '',
+  perceivedUnderstanding: '',
+  mentalEffort: '',
+  preferredModality: '',
+  voiceComfort: '',
+  preferredSystem: '',
+  comment: '',
+})
+
+const createSurveyPreviewSnapshot = () => {
+  const now = new Date().toISOString()
+  return {
+    studyConfig: {
+      id: 'preview-survey-feedback',
+      seedConcept: 'AVL tree rotations',
+      conceptSummary: 'AVL tree rotations',
+      timeBudgetMs: 18 * 60 * 1000,
+      evaluationBundle: { prompts: [] },
+    },
+    session: {
+      id: 'preview-survey-feedback',
+      studyConfigId: 'preview-survey-feedback',
+      condition: SPRINT4_CONDITIONS.GUIDED,
+      phase: SPRINT4_PHASES.SURVEY,
+      status: 'active',
+      currentNodeId: '',
+      turnIndex: 7,
+      startedAt: now,
+      learningCompletedAt: now,
+      evaluationCompletedAt: now,
+      surveyCompletedAt: null,
+      timeBudgetMs: 18 * 60 * 1000,
+      graphNodes: [],
+      messages: [],
+      evaluationScores: [],
+      surveyResponse: null,
+    },
+  }
+}
 
 const statusLabel = (status) => {
   if (status === NODE_STATES.MASTERED_INDEPENDENTLY) return 'Mastered'
@@ -62,11 +135,28 @@ const statusLabel = (status) => {
   return 'Locked'
 }
 
+const INTAKE_COURSES = [
+  'CS 1331 - Intro to OOP',
+  'CS 1332 - Data Structures & Algorithms',
+  'CS 2050 - Intro to Discrete Math',
+  'CS 2110 - Computer Organization & Programming',
+  'CS 2340 - Objects & Design',
+  'MATH 2551 - Multivariable Calculus',
+  'MATH 2552 - Differential Equations',
+  'CS 3510 - Design & Analysis of Algorithms',
+  'Other',
+]
+
 const MVPV2 = () => {
   const [searchParams] = useSearchParams()
   const studyConfigId = searchParams.get('study')?.trim() || BUILTIN_STUDY_ID
   const forceCondition = searchParams.get('condition')?.trim() || ''
   const forceNew = searchParams.get('new') === '1'
+  const previewMode = searchParams.get('preview')?.trim() || ''
+  const isSurveyPreview = previewMode === 'survey-feedback'
+  const [intakeCompleted, setIntakeCompleted] = useState(false)
+  const [intakeData, setIntakeData] = useState({ name: '', email: '', course: '' })
+  const [intakeErrors, setIntakeErrors] = useState({})
   const [booting, setBooting] = useState(true)
   const [sessionToken, setSessionToken] = useState('')
   const [snapshot, setSnapshot] = useState(null)
@@ -75,7 +165,7 @@ const MVPV2 = () => {
   const [loading, setLoading] = useState(false)
   const [timeRemainingMs, setTimeRemainingMs] = useState(0)
   const [evaluationAnswers, setEvaluationAnswers] = useState({})
-  const [survey, setSurvey] = useState({ clarity: '', confidence: '', usefulness: '', comment: '' })
+  const [survey, setSurvey] = useState(createDefaultSurveyState)
   const [skipModalNode, setSkipModalNode] = useState(null)
   const [paused, setPaused] = useState(false)
   const pausedAtRef = useRef(null)
@@ -91,9 +181,35 @@ const MVPV2 = () => {
 
   const { flushEvents } = useTabVisibility()
 
+  const handleIntakeSubmit = () => {
+    const errors = {}
+    if (!intakeData.name.trim()) errors.name = 'Name is required'
+    if (!intakeData.email.trim()) errors.email = 'Email is required'
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(intakeData.email.trim())) errors.email = 'Enter a valid email'
+    if (!intakeData.course) errors.course = 'Please select a course'
+    if (Object.keys(errors).length) { setIntakeErrors(errors); return }
+    setIntakeErrors({})
+    setIntakeCompleted(true)
+  }
+
   useEffect(() => {
+    if (isSurveyPreview) {
+      setIntakeCompleted(true)
+    }
+  }, [isSurveyPreview])
+
+  useEffect(() => {
+    if (!intakeCompleted) return
     let cancelled = false
     const bootstrap = async () => {
+      if (isSurveyPreview) {
+        setSessionToken('__preview__')
+        setSnapshot(createSurveyPreviewSnapshot())
+        setTimeRemainingMs(0)
+        setSurvey(createDefaultSurveyState())
+        setBooting(false)
+        return
+      }
       if (!studyConfigId) { setBooting(false); return }
       try {
         const started = await startSession({ studyConfigId, forceCondition, forceNew })
@@ -109,7 +225,7 @@ const MVPV2 = () => {
     }
     bootstrap()
     return () => { cancelled = true }
-  }, [studyConfigId])
+  }, [intakeCompleted, forceCondition, forceNew, isSurveyPreview, studyConfigId])
 
   useEffect(() => {
     if (!snapshot?.session || snapshot.session.phase !== SPRINT4_PHASES.LEARNING) return undefined
@@ -281,10 +397,24 @@ const MVPV2 = () => {
   const handleSubmitSurvey = async (event) => {
     event.preventDefault()
     if (!sessionToken) return
-    if (SURVEY_FIELDS.some((f) => !survey[f.key])) { setPageError('Complete the short survey before finishing.'); return }
+    if (REQUIRED_SURVEY_KEYS.some((key) => !survey[key])) { setPageError('Complete the short survey before finishing.'); return }
     setLoading(true)
     setPageError('')
     try {
+      if (isSurveyPreview) {
+        const completedAt = new Date().toISOString()
+        setSnapshot((prev) => (prev ? {
+          ...prev,
+          session: {
+            ...prev.session,
+            phase: SPRINT4_PHASES.SUMMARY,
+            status: 'completed',
+            surveyCompletedAt: completedAt,
+            surveyResponse: { ...survey },
+          },
+        } : prev))
+        return
+      }
       const next = await submitSurvey({ token: sessionToken, survey })
       setSnapshot(next.snapshot)
     } catch (error) {
@@ -294,12 +424,93 @@ const MVPV2 = () => {
     }
   }
 
+  if (!intakeCompleted) {
+    const updateField = (key, value) => {
+      setIntakeData((prev) => ({ ...prev, [key]: value }))
+      setIntakeErrors((prev) => { const next = { ...prev }; delete next[key]; return next })
+    }
+    return (
+      <div className="relative w-full h-screen overflow-hidden bg-forest-darker">
+        <div className="h-full overflow-y-auto">
+          <div className="mx-auto max-w-xl px-5 pb-14 pt-8">
+            <div className="flex items-center gap-3 mb-10">
+              <Logo variant="full" />
+              <span className="text-[10px] uppercase tracking-[0.25em] text-forest-gray">Sprint 4</span>
+            </div>
+
+            <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}>
+              <div className="rounded-xl border border-forest-border bg-forest-card/40 p-6">
+                <p className="text-[10px] uppercase tracking-[0.25em] text-forest-emerald font-semibold">Welcome</p>
+                <h1 className="mt-3 text-2xl font-semibold text-white">Before we begin</h1>
+                <p className="mt-2 text-sm text-forest-light-gray leading-relaxed">
+                  Please provide your details so we can personalize the session and track your progress.
+                </p>
+
+                <div className="mt-6 space-y-5">
+                  <div>
+                    <label htmlFor="intake-name" className="block text-sm font-medium text-white mb-1.5">Full name</label>
+                    <input
+                      id="intake-name"
+                      type="text"
+                      value={intakeData.name}
+                      onChange={(e) => updateField('name', e.target.value)}
+                      placeholder="Jane Doe"
+                      className={`w-full rounded-xl border ${intakeErrors.name ? 'border-red-500/70' : 'border-forest-border'} bg-forest-darker/60 px-4 py-3 text-sm text-white outline-none transition focus:border-forest-emerald placeholder:text-forest-gray`}
+                    />
+                    {intakeErrors.name && <p className="mt-1 text-xs text-red-400">{intakeErrors.name}</p>}
+                  </div>
+
+                  <div>
+                    <label htmlFor="intake-email" className="block text-sm font-medium text-white mb-1.5">Email address</label>
+                    <input
+                      id="intake-email"
+                      type="email"
+                      value={intakeData.email}
+                      onChange={(e) => updateField('email', e.target.value)}
+                      placeholder="jdoe3@gatech.edu"
+                      className={`w-full rounded-xl border ${intakeErrors.email ? 'border-red-500/70' : 'border-forest-border'} bg-forest-darker/60 px-4 py-3 text-sm text-white outline-none transition focus:border-forest-emerald placeholder:text-forest-gray`}
+                    />
+                    {intakeErrors.email && <p className="mt-1 text-xs text-red-400">{intakeErrors.email}</p>}
+                  </div>
+
+                  <div>
+                    <label htmlFor="intake-course" className="block text-sm font-medium text-white mb-1.5">Current course</label>
+                    <select
+                      id="intake-course"
+                      value={intakeData.course}
+                      onChange={(e) => updateField('course', e.target.value)}
+                      className={`w-full rounded-xl border ${intakeErrors.course ? 'border-red-500/70' : 'border-forest-border'} bg-forest-darker/60 px-4 py-3 text-sm outline-none transition focus:border-forest-emerald ${intakeData.course ? 'text-white' : 'text-forest-gray'}`}
+                    >
+                      <option value="" disabled>Select your course</option>
+                      {INTAKE_COURSES.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                    {intakeErrors.course && <p className="mt-1 text-xs text-red-400">{intakeErrors.course}</p>}
+                  </div>
+                </div>
+
+                <div className="mt-8">
+                  <Button onClick={handleIntakeSubmit} fullWidth>
+                    <span className="flex items-center justify-center gap-2">
+                      <ArrowRight size={16} />
+                      Continue
+                    </span>
+                  </Button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        </div>
+        {pageError && <ErrorToast message={pageError} onDismiss={() => setPageError('')} />}
+      </div>
+    )
+  }
+
   if (booting) {
     return (
       <div className="relative w-full h-screen overflow-hidden bg-forest-darker flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
           <Loader size={32} className="animate-spin text-forest-emerald" />
-          <p className="text-forest-light-gray text-sm">Initializing Sprint 4 session...</p>
+          <p className="text-forest-light-gray text-sm">Initializing session...</p>
         </div>
       </div>
     )
@@ -326,7 +537,7 @@ const MVPV2 = () => {
                 <div className="mt-6">
                   <p className="text-sm text-white mb-3">How well do you understand this concept right now?</p>
                   <div className="flex gap-2">
-                    {[1, 2, 3, 4, 5].map((value) => (
+                    {RATING_VALUES.map((value) => (
                       <button
                         key={value}
                         type="button"
@@ -696,11 +907,17 @@ const MVPV2 = () => {
                 <h1 className="mt-3 text-2xl font-semibold text-white">Short reflection</h1>
 
                 <form className="mt-6 space-y-5" onSubmit={handleSubmitSurvey}>
+                  {isSurveyPreview && (
+                    <div className="rounded-xl border border-forest-emerald/25 bg-forest-emerald/10 px-4 py-3 text-sm text-forest-light-gray">
+                      Preview mode: this shows the expanded Sprint 4 feedback form with the additional study columns. Finishing the form stays local to this browser session.
+                    </div>
+                  )}
+
                   {SURVEY_FIELDS.map((field) => (
                     <div key={field.key}>
                       <p className="mb-2 text-sm text-white">{field.label}</p>
                       <div className="flex flex-wrap gap-2">
-                        {[1, 2, 3, 4, 5].map((value) => (
+                        {RATING_VALUES.map((value) => (
                           <button
                             key={value}
                             type="button"
@@ -717,6 +934,74 @@ const MVPV2 = () => {
                       </div>
                     </div>
                   ))}
+
+                  {ADDITIONAL_SURVEY_FIELDS.map((field) => (
+                    <div key={field.key}>
+                      <p className="mb-2 text-sm text-white">{field.label}</p>
+                      <div className="flex flex-wrap gap-2">
+                        {RATING_VALUES.map((value) => (
+                          <button
+                            key={value}
+                            type="button"
+                            onClick={() => setSurvey((prev) => ({ ...prev, [field.key]: `${value}` }))}
+                            className={`rounded-lg border px-4 py-2 text-sm transition ${
+                              survey[field.key] === `${value}`
+                                ? 'border-forest-emerald/60 bg-forest-emerald/15 text-white'
+                                : 'border-forest-border bg-forest-card/50 text-forest-light-gray hover:border-forest-emerald/30'
+                            }`}
+                          >
+                            {value}
+                          </button>
+                        ))}
+                      </div>
+                      {(field.minLabel || field.maxLabel) && (
+                        <div className="mt-1.5 flex justify-between px-1 text-[10px] text-forest-gray">
+                          <span>{field.minLabel || ''}</span>
+                          <span>{field.maxLabel || ''}</span>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+
+                  <div>
+                    <p className="mb-2 text-sm text-white">Which modality felt best for this session?</p>
+                    <div className="grid gap-2 md:grid-cols-3">
+                      {PREFERRED_MODALITY_OPTIONS.map((option) => (
+                        <button
+                          key={option}
+                          type="button"
+                          onClick={() => setSurvey((prev) => ({ ...prev, preferredModality: option }))}
+                          className={`rounded-xl border px-4 py-3 text-left text-sm transition ${
+                            survey.preferredModality === option
+                              ? 'border-forest-emerald/60 bg-forest-emerald/15 text-white'
+                              : 'border-forest-border bg-forest-card/50 text-forest-light-gray hover:border-forest-emerald/30'
+                          }`}
+                        >
+                          {option}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="mb-2 text-sm text-white">If you had to keep learning with one system, which would you prefer?</p>
+                    <div className="grid gap-2 md:grid-cols-3">
+                      {PREFERRED_SYSTEM_OPTIONS.map((option) => (
+                        <button
+                          key={option}
+                          type="button"
+                          onClick={() => setSurvey((prev) => ({ ...prev, preferredSystem: option }))}
+                          className={`rounded-xl border px-4 py-3 text-left text-sm transition ${
+                            survey.preferredSystem === option
+                              ? 'border-forest-emerald/60 bg-forest-emerald/15 text-white'
+                              : 'border-forest-border bg-forest-card/50 text-forest-light-gray hover:border-forest-emerald/30'
+                          }`}
+                        >
+                          {option}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
 
                   <div>
                     <p className="mb-2 text-sm text-white">Anything notable about the experience?</p>
@@ -784,6 +1069,22 @@ const MVPV2 = () => {
                   </div>
                 )}
 
+                {snapshot.session.surveyResponse && (
+                  <div className="mt-6 rounded-xl border border-forest-border bg-forest-darker/50 p-4">
+                    <p className="text-[10px] uppercase tracking-[0.2em] text-forest-emerald/70 font-semibold mb-4">Feedback Snapshot</p>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <SummaryMetric label="Clarity" value={snapshot.session.surveyResponse.clarity} />
+                      <SummaryMetric label="Confidence" value={snapshot.session.surveyResponse.confidence} />
+                      <SummaryMetric label="Usefulness" value={snapshot.session.surveyResponse.usefulness} />
+                      <SummaryMetric label="Understanding" value={snapshot.session.surveyResponse.perceivedUnderstanding} />
+                      <SummaryMetric label="Mental effort" value={snapshot.session.surveyResponse.mentalEffort} />
+                      <SummaryMetric label="Voice comfort" value={snapshot.session.surveyResponse.voiceComfort} />
+                      <SummaryMetric label="Preferred modality" value={snapshot.session.surveyResponse.preferredModality} />
+                      <SummaryMetric label="Preferred system" value={snapshot.session.surveyResponse.preferredSystem} />
+                    </div>
+                  </div>
+                )}
+
                 {isGuided && (
                   <div className="mt-6 h-[400px] rounded-xl overflow-hidden">
                     <DynamicConceptMap
@@ -802,6 +1103,13 @@ const MVPV2 = () => {
 
   return null
 }
+
+const SummaryMetric = ({ label, value }) => (
+  <div className="rounded-lg border border-forest-border bg-forest-card/50 px-3 py-2.5">
+    <p className="text-[10px] uppercase tracking-[0.18em] text-forest-gray">{label}</p>
+    <p className="mt-1.5 text-sm text-white">{value || '—'}</p>
+  </div>
+)
 
 const ErrorToast = ({ message, onDismiss }) => (
   <div className="fixed bottom-4 right-4 z-30 max-w-md">

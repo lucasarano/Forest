@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { CheckCircle2, Compass, Lock, SkipForward, Sparkles, AlertCircle, Focus } from 'lucide-react'
+import { CheckCircle2, Compass, Lock, SkipForward, Sparkles, Star, AlertCircle, Focus } from 'lucide-react'
 import { NODE_STATES } from '../../lib/sprint4/constants'
 
 const NODE_RADIUS = 28
@@ -30,20 +30,20 @@ const statusConfig = {
     dotColor: '#f59e0b',
   },
   [NODE_STATES.MASTERED_WITH_SUPPORT]: {
-    bg: 'rgba(34, 211, 238, 0.1)',
-    border: 'rgba(34, 211, 238, 0.5)',
-    glow: 'rgba(34, 211, 238, 0.25)',
+    bg: 'rgba(59, 130, 246, 0.15)',
+    border: '#3b82f6',
+    glow: 'rgba(59, 130, 246, 0.35)',
     cssClass: 's4-node-mastered-sup',
-    icon: CheckCircle2,
-    dotColor: '#22d3ee',
+    icon: Star,
+    dotColor: '#60a5fa',
   },
   [NODE_STATES.MASTERED_INDEPENDENTLY]: {
-    bg: 'rgba(52, 211, 153, 0.15)',
-    border: '#34d399',
-    glow: 'rgba(52, 211, 153, 0.3)',
+    bg: 'rgba(59, 130, 246, 0.2)',
+    border: '#60a5fa',
+    glow: 'rgba(96, 165, 250, 0.4)',
     cssClass: 's4-node-mastered-ind',
-    icon: CheckCircle2,
-    dotColor: '#34d399',
+    icon: Star,
+    dotColor: '#93c5fd',
   },
   [NODE_STATES.SKIPPED]: {
     bg: 'rgba(107, 114, 128, 0.15)',
@@ -74,7 +74,9 @@ const DynamicConceptMap = ({ nodes, activeNodeId, onSelect }) => {
     const el = containerRef.current
     if (!el || safeNodes.length === 0) return
     const rect = el.getBoundingClientRect()
-    const padding = 80
+    const paddingX = 80
+    const paddingTop = 80
+    const paddingBottom = 80
 
     const xs = safeNodes.filter((n) => n.layout).map((n) => n.layout.x)
     const ys = safeNodes.filter((n) => n.layout).map((n) => n.layout.y)
@@ -85,10 +87,9 @@ const DynamicConceptMap = ({ nodes, activeNodeId, onSelect }) => {
     const minY = Math.min(...ys)
     const maxY = Math.max(...ys)
 
-    const contentW = maxX - minX + padding * 2
-    const contentH = maxY - minY + padding * 2
+    const contentW = maxX - minX + paddingX * 2
+    const contentH = maxY - minY + paddingTop + paddingBottom
     const cx = (minX + maxX) / 2
-    const cy = (minY + maxY) / 2
 
     const scaleX = rect.width / contentW
     const scaleY = rect.height / contentH
@@ -97,7 +98,7 @@ const DynamicConceptMap = ({ nodes, activeNodeId, onSelect }) => {
 
     setCamera({
       x: rect.width / 2 - cx * clamped,
-      y: rect.height / 2 - cy * clamped,
+      y: rect.height - paddingBottom - maxY * clamped,
       scale: clamped,
     })
   }, [safeNodes])
@@ -220,7 +221,7 @@ const DynamicConceptMap = ({ nodes, activeNodeId, onSelect }) => {
             return (
               <div
                 key={node.id}
-                className={`absolute s4-map-node ${cfg.cssClass}`}
+                className="absolute s4-map-node"
                 style={{
                   left: node.layout.x,
                   top: node.layout.y,
@@ -233,7 +234,7 @@ const DynamicConceptMap = ({ nodes, activeNodeId, onSelect }) => {
               >
                 {/* Outer circle */}
                 <div
-                  className="relative flex items-center justify-center"
+                  className={`relative flex items-center justify-center ${cfg.cssClass}`}
                   style={{
                     width: r * 2,
                     height: r * 2,
@@ -325,8 +326,8 @@ const DynamicConceptMap = ({ nodes, activeNodeId, onSelect }) => {
           <span className="flex items-center gap-1 text-[10px] text-amber-400">
             <span className="w-2 h-2 rounded-full bg-amber-400" /> Partial
           </span>
-          <span className="flex items-center gap-1 text-[10px] text-cyan-400">
-            <span className="w-2 h-2 rounded-full bg-cyan-400" /> Mastered
+          <span className="flex items-center gap-1 text-[10px] text-blue-400">
+            <span className="w-2 h-2 rounded-full bg-blue-400" /> Mastered
           </span>
         </div>
       </div>
