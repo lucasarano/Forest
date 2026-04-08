@@ -1,8 +1,13 @@
-import React, { useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 
 const MCQPrompt = ({ mcq, onSelect }) => {
   const [selected, setSelected] = useState(null)
   const [submitted, setSubmitted] = useState(false)
+
+  useEffect(() => {
+    setSelected(null)
+    setSubmitted(false)
+  }, [mcq])
 
   const options = useMemo(() => {
     const raw = [

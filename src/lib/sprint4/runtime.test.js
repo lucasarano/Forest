@@ -60,6 +60,23 @@ const createAssessmentPayload = (overrides = {}) => ({
   ...overrides,
 })
 
+const createMcqPayload = (overrides = {}) => ({
+  question: 'Which explanation best matches the correct mechanism?',
+  correctAnswer: 'The model steps in the direction opposite the gradient so the loss decreases locally.',
+  distractors: [
+    {
+      text: 'The model increases the gradient to move faster toward the highest loss.',
+      misconceptionLabel: 'gradient direction confusion',
+    },
+    {
+      text: 'The model resets all weights to zero after every mistake.',
+      misconceptionLabel: 'weight reset misconception',
+    },
+  ],
+  explanation: 'The correct choice follows the negative gradient, which points toward a local decrease in loss.',
+  ...overrides,
+})
+
 const createDynamicNode = ({
   id,
   title,
@@ -86,8 +103,12 @@ const createDynamicNode = ({
   bestScores: createEmptyDimensionScores(),
   misconceptionStreak: 0,
   attempts: 0,
+  lastMcqAtAttempt: 0,
+  checkpointMcqCompleted: false,
+  pendingMcqMode: '',
   lastAssessmentSummary: '',
   simpleGoodTurnCount,
+  partialStruggleCount: 0,
   clarificationDepth,
   derivedFromTopic,
   rubric: null,
@@ -263,7 +284,7 @@ test("explicit confusion about parameters creates a dynamic child branch", async
   assert.equal(result.session.currentNodeId, childNode.id)
 })
 
-test('dynamic nodes complete after two cumulative directionally correct turns', async () => {
+test('dynamic nodes do not complete after two shallow directionally correct turns', async () => {
   const { session, studyConfig } = await createLearningFixture()
   const rootNode = {
     ...studyConfig.graphNodes[0],
@@ -318,10 +339,283 @@ test('dynamic nodes complete after two cumulative directionally correct turns', 
 
   assert.equal(afterFirstTurn.session.currentNodeId, dynamicNode.id)
   assert.equal(afterFirstTurn.session.graphNodes.find((node) => node.id === dynamicNode.id).simpleGoodTurnCount, 1)
+  assert.equal(childNode.status, NODE_STATES.PARTIAL)
+  assert.equal(childNode.simpleGoodTurnCount, 2)
+  assert.equal(unlockedRoot.status, NODE_STATES.LOCKED)
+  assert.equal(afterSecondTurn.session.currentNodeId, dynamicNode.id)
+})
+
+test('dynamic nodes master only after a stronger second explanation', async () => {
+  const { session, studyConfig } = await createLearningFixture()
+  const rootNode = {
+    ...studyConfig.graphNodes[0],
+    status: NODE_STATES.LOCKED,
+    parentIds: ['model-prediction'],
+  }
+  const dynamicNode = createDynamicNode({
+    id: 'model-prediction',
+    title: 'Model prediction',
+    summary: 'Explain what a model prediction is.',
+    derivedFromTopic: 'model prediction',
+  })
+  const workingSession = {
+    ...session,
+    graphNodes: [rootNode, dynamicNode],
+    currentNodeId: dynamicNode.id,
+  }
+
+  const fetchStub = createFetchSequence([
+    createChatResponse(JSON.stringify(createAssessmentPayload({
+      explanation: 1,
+      causalReasoning: 1,
+      conciseRationale: 'The learner gave a basic mechanism-level answer.',
+      tutorFocus: 'Ask for a fuller explanation of how the prediction is produced.',
+    }))),
+    createChatResponse('Good start. Now explain how the model produces that prediction.'),
+    createChatResponse(JSON.stringify(createAssessmentPayload({
+      explanation: 2,
+      causalReasoning: 1,
+      conciseRationale: 'The learner explained the mechanism more clearly.',
+      tutorFocus: 'Acknowledge and reconnect to the parent concept.',
+    }))),
+    createChatResponse("Nice. Now let's return to the main idea."),
+  ])
+  global.fetch = fetchStub
+
+  const afterFirstTurn = await runGuidedTurn({
+    session: workingSession,
+    studyConfig,
+    userMessage: 'It is the output the model produces from the input.',
+    helpRequested: false,
+  })
+  const afterSecondTurn = await runGuidedTurn({
+    session: afterFirstTurn.session,
+    studyConfig,
+    userMessage: 'The model combines the learned weights with the input to produce the prediction.',
+    helpRequested: false,
+  })
+
+  const childNode = afterSecondTurn.session.graphNodes.find((node) => node.id === dynamicNode.id)
+  const unlockedRoot = afterSecondTurn.session.graphNodes.find((node) => node.id === rootNode.id)
+
   assert.equal(childNode.status, NODE_STATES.MASTERED_INDEPENDENTLY)
   assert.equal(childNode.simpleGoodTurnCount, 2)
   assert.equal(unlockedRoot.status, NODE_STATES.ACTIVE)
   assert.equal(afterSecondTurn.session.currentNodeId, rootNode.id)
+})
+
+test('keyword-only answers do not increment clarification progress', async () => {
+  const { session, studyConfig } = await createLearningFixture()
+  const rootNode = {
+    ...studyConfig.graphNodes[0],
+    status: NODE_STATES.LOCKED,
+    parentIds: ['loss-function'],
+  }
+  const dynamicNode = createDynamicNode({
+    id: 'loss-function',
+    title: 'Loss function',
+    summary: 'Explain what the loss function represents.',
+    derivedFromTopic: 'loss function',
+  })
+  const workingSession = {
+    ...session,
+    graphNodes: [rootNode, dynamicNode],
+    currentNodeId: dynamicNode.id,
+  }
+
+  const fetchStub = createFetchSequence([
+    createChatResponse(JSON.stringify(createAssessmentPayload({
+      explanation: 0,
+      causalReasoning: 0,
+      conciseRationale: 'The learner only repeated the term without explaining it.',
+      tutorFocus: 'Define what the loss function measures and ask for a plain-language explanation.',
+    }))),
+    createChatResponse("Let's clarify what the loss function measures before moving on."),
+  ])
+  global.fetch = fetchStub
+
+  const result = await runGuidedTurn({
+    session: workingSession,
+    studyConfig,
+    userMessage: 'loss function',
+    helpRequested: false,
+  })
+
+  const childNode = result.session.graphNodes.find((node) => node.id === dynamicNode.id)
+  assert.equal(childNode.simpleGoodTurnCount, 0)
+  assert.equal(childNode.promptKind, PROMPT_KINDS.TEACH)
+})
+
+test('root nodes emit a checkpoint MCQ after partial core understanding', async () => {
+  const { session, studyConfig } = await createLearningFixture()
+  const fetchStub = createFetchSequence([
+    createChatResponse(JSON.stringify(createAssessmentPayload({
+      explanation: 1,
+      causalReasoning: 1,
+      conciseRationale: 'The learner has partial causal understanding of gradient descent.',
+      tutorFocus: 'Check whether they can distinguish the correct mechanism from nearby misconceptions.',
+    }))),
+    createChatResponse(JSON.stringify(createMcqPayload())),
+    createChatResponse('Choose the option that best explains how gradient descent reduces loss.'),
+  ])
+  global.fetch = fetchStub
+
+  const result = await runGuidedTurn({
+    session,
+    studyConfig,
+    userMessage: 'It updates the weights in a direction that lowers the loss.',
+    helpRequested: false,
+  })
+
+  const rootNode = result.session.graphNodes.find((node) => node.nodeType === NODE_TYPES.ROOT)
+  assert.equal(rootNode.promptKind, PROMPT_KINDS.MCQ)
+  assert.equal(rootNode.pendingMcqMode, 'checkpoint')
+  assert.equal(rootNode.checkpointMcqCompleted, false)
+  assert.ok(result.tutorMessage.metadata.mcq)
+})
+
+test('dynamic nodes can emit a checkpoint MCQ after repeated partial struggle', async () => {
+  const { session, studyConfig } = await createLearningFixture()
+  const rootNode = {
+    ...studyConfig.graphNodes[0],
+    status: NODE_STATES.LOCKED,
+    parentIds: ['negative-gradient'],
+  }
+  const dynamicNode = createDynamicNode({
+    id: 'negative-gradient',
+    title: 'Negative gradient',
+    summary: 'Explain why moving opposite the gradient lowers the loss.',
+    derivedFromTopic: 'negative gradient',
+  })
+  const workingSession = {
+    ...session,
+    graphNodes: [rootNode, dynamicNode],
+    currentNodeId: dynamicNode.id,
+  }
+
+  const fetchStub = createFetchSequence([
+    createChatResponse(JSON.stringify(createAssessmentPayload({
+      explanation: 1,
+      causalReasoning: 0,
+      conciseRationale: 'The learner named the right idea but did not explain why it works.',
+      tutorFocus: 'Ask what moving opposite the gradient accomplishes.',
+    }))),
+    createChatResponse('You are close. Explain why moving opposite the gradient helps.'),
+    createChatResponse(JSON.stringify(createAssessmentPayload({
+      explanation: 1,
+      causalReasoning: 0,
+      conciseRationale: 'The learner is still partial after another attempt.',
+      tutorFocus: 'Use a quick checkpoint to surface the exact confusion.',
+    }))),
+    createChatResponse(JSON.stringify(createMcqPayload({
+      question: 'Which option best explains why stepping opposite the gradient lowers loss?'
+    }))),
+    createChatResponse('Pick the explanation that best matches what the negative gradient tells us.'),
+  ])
+  global.fetch = fetchStub
+
+  const afterFirstTurn = await runGuidedTurn({
+    session: workingSession,
+    studyConfig,
+    userMessage: 'It means we move opposite the slope.',
+    helpRequested: false,
+  })
+  const afterSecondTurn = await runGuidedTurn({
+    session: afterFirstTurn.session,
+    studyConfig,
+    userMessage: 'We go away from the gradient.',
+    helpRequested: false,
+  })
+
+  const childNode = afterSecondTurn.session.graphNodes.find((node) => node.id === dynamicNode.id)
+  assert.equal(childNode.partialStruggleCount, 2)
+  assert.equal(childNode.promptKind, PROMPT_KINDS.MCQ)
+  assert.equal(childNode.pendingMcqMode, 'checkpoint')
+  assert.ok(afterSecondTurn.tutorMessage.metadata.mcq)
+})
+
+test('a correct checkpoint MCQ does not grant recall credit', async () => {
+  const { session, studyConfig } = await createLearningFixture()
+  const rootNode = {
+    ...studyConfig.graphNodes[0],
+    promptKind: PROMPT_KINDS.MCQ,
+    pendingMcqMode: 'checkpoint',
+    checkpointMcqCompleted: false,
+    status: NODE_STATES.PARTIAL,
+    successfulRecallCount: 0,
+    attempts: 2,
+    lastMcqAtAttempt: 2,
+  }
+  const workingSession = {
+    ...session,
+    graphNodes: [rootNode],
+    currentNodeId: rootNode.id,
+  }
+
+  const fetchStub = createFetchSequence([
+    createChatResponse(JSON.stringify(createAssessmentPayload({
+      explanation: 0,
+      causalReasoning: 0,
+      conciseRationale: 'The learner selected the correct option but has not explained it yet.',
+      tutorFocus: 'Ask them to explain why the correct option is right.',
+    }))),
+    createChatResponse('Correct choice. Now explain why that option is right in your own words.'),
+  ])
+  global.fetch = fetchStub
+
+  const result = await runGuidedTurn({
+    session: workingSession,
+    studyConfig,
+    userMessage: 'I selected: "The model steps in the direction opposite the gradient so the loss decreases locally." (correct)',
+    helpRequested: false,
+  })
+
+  const updatedRoot = result.session.graphNodes.find((node) => node.id === rootNode.id)
+  assert.equal(updatedRoot.successfulRecallCount, 0)
+  assert.equal(updatedRoot.checkpointMcqCompleted, true)
+  assert.equal(updatedRoot.promptKind, PROMPT_KINDS.REASSESS)
+})
+
+test('after an MCQ the flow returns to open-ended follow-up instead of mastering immediately', async () => {
+  const { session, studyConfig } = await createLearningFixture()
+  const rootNode = {
+    ...studyConfig.graphNodes[0],
+    promptKind: PROMPT_KINDS.MCQ,
+    pendingMcqMode: 'checkpoint',
+    checkpointMcqCompleted: false,
+    status: NODE_STATES.PARTIAL,
+    successfulRecallCount: 0,
+    attempts: 2,
+    lastMcqAtAttempt: 2,
+  }
+  const workingSession = {
+    ...session,
+    graphNodes: [rootNode],
+    currentNodeId: rootNode.id,
+  }
+
+  const fetchStub = createFetchSequence([
+    createChatResponse(JSON.stringify(createAssessmentPayload({
+      explanation: 0,
+      causalReasoning: 0,
+      conciseRationale: 'The learner chose the correct option but still owes an explanation.',
+      tutorFocus: 'Prompt for a why/how explanation rather than closing the node.',
+    }))),
+    createChatResponse('That option is right. Why does following the negative gradient lower the loss?'),
+  ])
+  global.fetch = fetchStub
+
+  const result = await runGuidedTurn({
+    session: workingSession,
+    studyConfig,
+    userMessage: 'I selected: "The model steps in the direction opposite the gradient so the loss decreases locally." (correct)',
+    helpRequested: false,
+  })
+
+  const updatedRoot = result.session.graphNodes.find((node) => node.id === rootNode.id)
+  assert.equal(updatedRoot.status, NODE_STATES.PARTIAL)
+  assert.equal(updatedRoot.promptKind, PROMPT_KINDS.REASSESS)
+  assert.equal(result.tutorMessage.metadata.mcq, undefined)
 })
 
 test('explicit confusion on a dynamic node creates a deeper child branch', async () => {

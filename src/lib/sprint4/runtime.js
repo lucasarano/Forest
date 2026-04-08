@@ -231,8 +231,12 @@ const addRuntimeFields = (node) => ({
   lastAssessmentSummary: node.lastAssessmentSummary || '',
   nodeType: node.nodeType || (node.isRoot ? NODE_TYPES.ROOT : ''),
   simpleGoodTurnCount: node.simpleGoodTurnCount || 0,
+  partialStruggleCount: node.partialStruggleCount || 0,
   clarificationDepth: node.clarificationDepth || 0,
   derivedFromTopic: node.derivedFromTopic || '',
+  lastMcqAtAttempt: node.lastMcqAtAttempt || 0,
+  checkpointMcqCompleted: !!node.checkpointMcqCompleted,
+  pendingMcqMode: node.pendingMcqMode || '',
 })
 
 const normalizePlannerNodes = (plannerOutput) => {
@@ -347,12 +351,14 @@ Help requested: ${helpRequested ? 'yes' : 'no'}
 ${uploadedDocContext ? `\nReference material provided by learner:\n${uploadedDocContext}\n` : ''}
 Score the learner's latest response only. Use 0 = absent/incorrect, 1 = partial, 2 = strong.
 IMPORTANT scoring rules (follow ALL):
-- A short or terse answer that is directionally correct should score at least 1. Only score 0 when the concept is genuinely absent or wrong.
-- Brevity, informal language, or typos are NEVER a reason to lower a score.
-- Do NOT penalize for omitting mathematical notation, formulas, or equations. Conceptual understanding in plain language is sufficient for full marks (2).
-- If the learner restates the core idea correctly, even without elaboration, give at least 1 for explanation and causalReasoning.
-- Be generous: when in doubt between two scores, pick the higher one. The goal is to help the learner progress, not gatekeep.
-- If the learner expresses confusion or says they don't understand, set recommendedAction to "teach" and keep scores at their current best — do not retroactively lower scores.
+- One-word replies, short phrases, prompt-term repetition, or vague answers like "idk", "loss function", or "gradient descent" score 0 for explanation unless they clearly state a correct idea.
+- Explanation = 1 requires a correct sentence-level claim in the learner's own words. A keyword, label, or copied phrase is not enough.
+- Explanation = 2 requires a coherent plain-language explanation of what is happening in this node.
+- CausalReasoning = 0 unless the learner explains a mechanism, dependency, step, or cause-and-effect relation.
+- CausalReasoning = 1 requires at least one correct why/how link or concrete mechanism.
+- CausalReasoning = 2 requires a clear why/how chain, not just "it reduces loss" or another high-level conclusion.
+- Do NOT penalize for omitting mathematical notation, formulas, or equations. Plain-language conceptual understanding can still earn full marks.
+- If the learner expresses confusion or says they don't understand, set recommendedAction to "teach" and score only what is actually present in the latest response.
 Also identify if the learner is exploring any subtopics or has knowledge gaps that would benefit from a new focused node.
 
 Return JSON matching this exact structure:
@@ -430,6 +436,9 @@ Assessment rationale: ${assessment?.conciseRationale || ''}
 Assessment gaps: ${(assessment?.missingConcepts || []).join('; ') || 'none'}
 Assessment strengths: ${(assessment?.strengths || []).join('; ') || 'none'}
 Misconception status: ${assessment?.misconceptionDetected ? `${assessment?.misconceptionLabel}: ${assessment?.misconceptionReason}` : 'none'}
+MCQ follow-up: ${decision?.mcqOutcome
+    ? `${decision.mcqOutcome.correct ? 'learner selected the correct option' : 'learner selected an incorrect option'} (${decision.mcqOutcome.mode || 'diagnostic'})`
+    : 'none'}
 Recent conversation:
 ${recentMessages || 'No prior conversation.'}
 ${uploadedDocContext ? `\nReference material provided by learner:\n${uploadedDocContext}\n` : ''}
@@ -441,6 +450,10 @@ Behavior rules:
 - Do not mention internal scores, nodes, rubric dimensions, or mastery logic.
 - If the node was just mastered, acknowledge progress briefly and steer to the next useful prompt.
 - NEVER ask the learner to write mathematical formulas, equations, or notation. Accept conceptual or plain-language explanations. You may show formulas when teaching, but do not require the learner to produce them.
+- Do not treat weak, vague, or keyword-only answers as sufficient understanding.
+- After an MCQ, ask the learner to explain why the correct option is right in their own words. If they chose incorrectly, correct the misconception briefly before asking for that explanation.
+- For partial answers, press for mechanism, cause-and-effect, or a concrete step-by-step explanation.
+- For clarification nodes, explicitly reconnect the subtopic back to the parent concept before moving on.
 `
 
 const createMCQPrompt = ({ seedConcept, node, latestAssessment }) => `
@@ -448,9 +461,13 @@ Seed concept: ${seedConcept}
 Node: ${node.title}
 Node summary: ${node.summary}
 ${latestAssessment?.misconceptionLabel ? `Detected misconception: ${latestAssessment.misconceptionLabel}` : ''}
+Assessment gaps: ${(latestAssessment?.missingConcepts || []).join('; ') || 'none'}
+Assessment strengths: ${(latestAssessment?.strengths || []).join('; ') || 'none'}
 
-Generate a multiple choice question that tests understanding of this concept.
-Include one correct answer and 2-4 distractors. Each distractor should represent a plausible misconception.
+Generate a mechanism-focused multiple choice question that tests understanding of this concept.
+Prefer questions that test why a process works, what step should happen next, or which explanation matches the correct causal story.
+Avoid pure vocabulary checks unless the node is explicitly about defining a term.
+Include one correct answer and 2-4 distractors. Each distractor should represent a realistic misconception for this node or the latest assessment, not a generic wrong answer.
 
 Return JSON matching this structure:
 {
@@ -541,6 +558,13 @@ const getBestScores = (node, evidenceRecords) => {
     misconceptionResistance: Math.max(scores.misconceptionResistance, evidence.scores?.misconceptionResistance || 0),
   }), createEmptyDimensionScores())
 }
+
+const getEffectiveScores = (bestScores, assessment = null) => ({
+  explanation: Math.max(bestScores?.explanation || 0, assessment?.explanation || 0),
+  causalReasoning: Math.max(bestScores?.causalReasoning || 0, assessment?.causalReasoning || 0),
+  transfer: Math.max(bestScores?.transfer || 0, assessment?.transfer || 0),
+  misconceptionResistance: Math.max(bestScores?.misconceptionResistance || 0, assessment?.misconceptionResistance || 0),
+})
 
 const isRootDynamicGraphSession = (session) => session?.graphModel === SPRINT4_GRAPH_MODELS.ROOT_DYNAMIC
 
@@ -720,9 +744,21 @@ const findMatchingAncestorTopic = ({ graphNodes, nodeId, topic }) => {
   )) || null
 }
 
+const isNonEmptyLearnerMessage = (value) => `${value || ''}`.trim().length > 0
+
 const isDirectionallyCorrectAssessment = (assessment) =>
   !assessment?.misconceptionDetected &&
-  (assessment?.explanation >= 1 || assessment?.causalReasoning >= 1)
+  assessment?.explanation >= 1 &&
+  assessment?.causalReasoning >= 1
+
+const isMeaningfulButInsufficientAssessment = (assessment) =>
+  !assessment?.misconceptionDetected &&
+  (assessment?.explanation >= 1 || assessment?.causalReasoning >= 1) &&
+  !isDirectionallyCorrectAssessment(assessment)
+
+const hasDynamicMasteryScores = (scores) =>
+  scores.explanation >= 2 &&
+  scores.causalReasoning >= 1
 
 const createDeterministicClarificationNode = ({ activeNode, confusionInfo, session }) => {
   const topic = normalizeConfusionTopic(
@@ -963,9 +999,15 @@ const decideNextAction = ({ node, assessment, session, evidenceRecords, userMess
   }
 
   const bestScores = getBestScores(node, evidenceRecords)
-  const hasStrongCore = bestScores.explanation >= 2 && bestScores.causalReasoning >= 2
+  const effectiveScores = getEffectiveScores(bestScores, assessment)
+  const hasPartialCore = effectiveScores.explanation >= 1 && effectiveScores.causalReasoning >= 1
+  const hasStrongCore = effectiveScores.explanation >= 2 && effectiveScores.causalReasoning >= 2
 
   const nodeAttempts = (node.attempts || 0)
+  const trimmedUserMessage = `${userMessage || ''}`.trim()
+  const hasNonEmptyResponse = isNonEmptyLearnerMessage(trimmedUserMessage)
+  const mcqCorrect = node.promptKind === PROMPT_KINDS.MCQ &&
+    /\(correct\)/i.test(trimmedUserMessage)
   const confusionInfo = inferConfusionInfo({
     userMessage,
     assessment,
@@ -999,7 +1041,9 @@ const decideNextAction = ({ node, assessment, session, evidenceRecords, userMess
     duplicateAncestorId: duplicateAncestor?.id || '',
     depthCapReached,
     hasStrongCore,
+    hasPartialCore,
     bestScores,
+    effectiveScores,
   })
 
   if (shouldExpand) {
@@ -1019,30 +1063,68 @@ const decideNextAction = ({ node, assessment, session, evidenceRecords, userMess
     return next
   }
 
+  if (node.promptKind === PROMPT_KINDS.MCQ) {
+    next.nextAction = mcqCorrect ? PROMPT_KINDS.REASSESS : PROMPT_KINDS.TEACH
+    next.markState = NODE_STATES.PARTIAL
+    next.mcqOutcome = {
+      correct: mcqCorrect,
+      mode: node.pendingMcqMode || 'diagnostic',
+    }
+    next.reason = mcqCorrect
+      ? `The learner selected the correct option for "${node.title}", but still needs to explain why it is right in their own words.`
+      : `The learner selected an incorrect option for "${node.title}", so the tutor should correct the misconception before asking for an explanation.`
+    return next
+  }
+
   if (isDynamicNode(node, session)) {
     const nextGoodTurnCount = (node.simpleGoodTurnCount || 0) + (isDirectionallyCorrectAssessment(assessment) ? 1 : 0)
+    const nextPartialStruggleCount = (node.partialStruggleCount || 0) +
+      (hasNonEmptyResponse && isMeaningfulButInsufficientAssessment(assessment) ? 1 : 0)
+    const meetsDynamicMasteryThreshold =
+      nextGoodTurnCount >= 2 &&
+      hasDynamicMasteryScores(effectiveScores)
 
-    if (nextGoodTurnCount >= 2) {
+    if (meetsDynamicMasteryThreshold) {
       next.nextAction = 'mark_mastered'
       next.markState = node.withSupportUsed ? NODE_STATES.MASTERED_WITH_SUPPORT : NODE_STATES.MASTERED_INDEPENDENTLY
+      return next
+    }
+
+    if (
+      !node.checkpointMcqCompleted &&
+      hasNonEmptyResponse &&
+      isMeaningfulButInsufficientAssessment(assessment) &&
+      nextPartialStruggleCount >= 2
+    ) {
+      next.nextAction = PROMPT_KINDS.MCQ
+      next.markState = NODE_STATES.PARTIAL
+      next.mcqMode = 'checkpoint'
+      next.reason = `The learner has given multiple partial answers on "${node.title}". Use a checkpoint MCQ to probe the mechanism before continuing.`
       return next
     }
 
     if (isDirectionallyCorrectAssessment(assessment)) {
       next.nextAction = PROMPT_KINDS.REASSESS
       next.markState = NODE_STATES.PARTIAL
-      next.reason = `The learner gave a directionally correct answer for "${node.title}". One more solid turn will complete this clarification node.`
+      next.reason = nextGoodTurnCount >= 2
+        ? `The learner has the gist of "${node.title}", but still needs a stronger mechanism-level explanation before the clarification can close.`
+        : `The learner showed some correct causal understanding of "${node.title}". Ask for a stronger explanation that connects the subtopic back to the parent idea.`
       return next
     }
 
-    next.nextAction = assessment.explanation === 0 || assessment.causalReasoning === 0 || session.helpRequested
-      ? PROMPT_KINDS.TEACH
-      : PROMPT_KINDS.REASSESS
+    if (hasNonEmptyResponse && isMeaningfulButInsufficientAssessment(assessment)) {
+      next.nextAction = PROMPT_KINDS.REASSESS
+      next.markState = NODE_STATES.PARTIAL
+      next.reason = `The learner is engaging with "${node.title}", but has not yet explained the mechanism clearly enough. Ask for a more concrete why/how explanation.`
+      return next
+    }
+
+    next.nextAction = PROMPT_KINDS.TEACH
     next.reason = `The learner has not yet shown enough understanding to complete the clarification node "${node.title}".`
     return next
   }
 
-  const hasTransfer = bestScores.transfer >= 1
+  const hasTransfer = effectiveScores.transfer >= 1
 
   if (node.promptKind === PROMPT_KINDS.RECALL) {
     if (assessment.explanation >= 2 && assessment.causalReasoning >= 1) {
@@ -1052,12 +1134,20 @@ const decideNextAction = ({ node, assessment, session, evidenceRecords, userMess
 
   if (assessment.misconceptionDetected) {
     next.nextAction = PROMPT_KINDS.MCQ
+    next.mcqMode = 'misconception'
     return next
   }
 
-  const turnsSinceLastMcq = nodeAttempts - (node.lastMcqAtAttempt || 0)
-  if (turnsSinceLastMcq >= 3 && nodeAttempts >= 2 && !hasStrongCore) {
+  if (
+    node.nodeType === NODE_TYPES.ROOT &&
+    !node.checkpointMcqCompleted &&
+    hasPartialCore &&
+    !hasTransfer
+  ) {
     next.nextAction = PROMPT_KINDS.MCQ
+    next.markState = NODE_STATES.PARTIAL
+    next.mcqMode = 'checkpoint'
+    next.reason = `Before moving past "${node.title}", run a checkpoint MCQ to verify the learner can distinguish the right causal story from nearby misconceptions.`
     return next
   }
 
@@ -1080,10 +1170,8 @@ const decideNextAction = ({ node, assessment, session, evidenceRecords, userMess
 
   const recallJustSucceeded = node.promptKind === PROMPT_KINDS.RECALL &&
     assessment.explanation >= 2 && assessment.causalReasoning >= 1
-  const mcqJustCorrect = node.promptKind === PROMPT_KINDS.MCQ &&
-    userMessage && /\(correct\)/i.test(userMessage)
   const effectiveRecallCount = (node.successfulRecallCount || 0) +
-    (recallJustSucceeded || mcqJustCorrect ? 1 : 0)
+    (recallJustSucceeded ? 1 : 0)
 
   if (effectiveRecallCount < 1) {
     next.nextAction = PROMPT_KINDS.RECALL
@@ -1371,6 +1459,14 @@ const tutorNode = async (state) => {
   const dynamicGoodTurnIncrement = isDynamicNode(currentNode, session) && isDirectionallyCorrectAssessment(latestAssessment)
     ? 1
     : 0
+  const dynamicPartialStruggleIncrement = isDynamicNode(currentNode, session) &&
+    currentNode.promptKind !== PROMPT_KINDS.MCQ &&
+    isNonEmptyLearnerMessage(userMessage) &&
+    isMeaningfulButInsufficientAssessment(latestAssessment)
+    ? 1
+    : 0
+  const checkpointMcqCompleted = currentNode.checkpointMcqCompleted ||
+    (currentNode.promptKind === PROMPT_KINDS.MCQ && currentNode.pendingMcqMode === 'checkpoint')
   const nextNodeState = {
     ...currentNode,
     attempts: newAttempts,
@@ -1381,10 +1477,15 @@ const tutorNode = async (state) => {
     simpleGoodTurnCount: isDynamicNode(currentNode, session)
       ? (currentNode.simpleGoodTurnCount || 0) + dynamicGoodTurnIncrement
       : (currentNode.simpleGoodTurnCount || 0),
+    partialStruggleCount: isDynamicNode(currentNode, session)
+      ? (currentNode.partialStruggleCount || 0) + dynamicPartialStruggleIncrement
+      : (currentNode.partialStruggleCount || 0),
     promptKind: decision.nextAction === 'mark_mastered'
       ? (isDynamicNode(currentNode, session) ? currentNode.promptKind : PROMPT_KINDS.RECALL)
       : (decision.nextAction === 'expand_graph' ? currentNode.promptKind : decision.nextAction),
     lastMcqAtAttempt: decision.nextAction === PROMPT_KINDS.MCQ ? newAttempts : (currentNode.lastMcqAtAttempt || 0),
+    checkpointMcqCompleted,
+    pendingMcqMode: decision.nextAction === PROMPT_KINDS.MCQ ? (decision.mcqMode || '') : '',
   }
 
   const recallSucceeded = currentNode.promptKind === PROMPT_KINDS.RECALL &&
@@ -1392,15 +1493,22 @@ const tutorNode = async (state) => {
   const mcqCorrect = currentNode.promptKind === PROMPT_KINDS.MCQ &&
     userMessage && /\(correct\)/i.test(userMessage)
 
-  if (recallSucceeded || mcqCorrect) {
+  if (recallSucceeded) {
     nextNodeState.successfulRecallCount = (currentNode.successfulRecallCount || 0) + 1
     nextNodeState.recallScheduledAtTurn = null
-    events.push(createEvent(mcqCorrect ? 'mcq_correct' : 'recall_success', {
+    events.push(createEvent('recall_success', {
       nodeId: currentNode.id,
       successfulRecallCount: nextNodeState.successfulRecallCount,
     }))
   } else {
     nextNodeState.successfulRecallCount = currentNode.successfulRecallCount || 0
+  }
+
+  if (currentNode.promptKind === PROMPT_KINDS.MCQ) {
+    events.push(createEvent(mcqCorrect ? 'mcq_correct' : 'mcq_incorrect', {
+      nodeId: currentNode.id,
+      mcqMode: currentNode.pendingMcqMode || 'diagnostic',
+    }))
   }
 
   if (decision.nextAction === PROMPT_KINDS.RECALL) {
@@ -1436,6 +1544,7 @@ const tutorNode = async (state) => {
     promptKind: nextNodeState.promptKind,
     attempts: nextNodeState.attempts,
     simpleGoodTurnCount: nextNodeState.simpleGoodTurnCount,
+    partialStruggleCount: nextNodeState.partialStruggleCount,
     bestScores: nextNodeState.bestScores,
     masteryState,
     parentIds: nextNodeState.parentIds,
@@ -1596,7 +1705,7 @@ const tutorNode = async (state) => {
     metadata: {
       promptKind: nextNode.promptKind,
       fromDecision: decision.nextAction,
-      ...(mcqData ? { mcq: mcqData } : {}),
+      ...(mcqData ? { mcq: { ...mcqData, mode: decision.mcqMode || '' } } : {}),
     },
   })
 

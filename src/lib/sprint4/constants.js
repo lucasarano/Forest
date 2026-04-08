@@ -57,12 +57,12 @@ export const EVALUATION_PROMPT_IDS = {
 }
 
 export const MODEL_BY_CONTEXT = {
-  assessment: 'gpt-4.1',
-  evaluation_score: 'gpt-4.1',
-  mcq_generate: 'gpt-4.1',
-  tutor: 'gpt-4.1-mini',
-  teach: 'gpt-4.1-mini',
-  planner: 'gpt-4.1-mini',
+  assessment: 'gpt-5.2',
+  evaluation_score: 'gpt-5.2',
+  mcq_generate: 'gpt-5.2',
+  tutor: 'gpt-5.2',
+  teach: 'gpt-5.2',
+  planner: 'gpt-5.2',
 }
 
 export const DEFAULT_TIME_BUDGET_MS = 15 * 60 * 1000

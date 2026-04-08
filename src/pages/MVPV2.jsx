@@ -738,7 +738,7 @@ const MVPV2 = () => {
                 ))}
 
                 {mcqData && !loading && (
-                  <MCQPrompt mcq={mcqData} onSelect={handleMCQAnswer} />
+                  <MCQPrompt key={lastMessage.id} mcq={mcqData} onSelect={handleMCQAnswer} />
                 )}
 
                 <AnimatePresence>
