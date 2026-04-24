@@ -1,0 +1,149 @@
+Script started on Tue Apr  7 22:43:02 2026
+[1m[7m%[27m[1m[0m                                                                 ]2;lucas@Lucass-MacBook-Pro-3:~/Developer/Forest-Home/Forest]1;..t-Home/Forest]7;file://Lucass-MacBook-Pro-3.local/Users/lucas/Developer/Forest-Home/Forest\[0m[27m[24m[J(base) lucas@Lucass-MacBook-Pro-3 Forest % [K[?1h=[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                 ]2;lucas@Lucass-MacBook-Pro-3:~/Developer/Forest-Home/Forest]1;..t-Home/Forest]7;file://Lucass-MacBook-Pro-3.local/Users/lucas/Developer/Forest-Home/Forest\[0m[27m[24m[J(base) lucas@Lucass-MacBook-Pro-3 Forest % [K[?1h=[?2004hc[1m[31mc[0m[39m[1m[31mc[0m[39m[90md /Users/lucas/Develo[90mp[90mer/Forest-Home/Forest && SPRINT4_SERVER_PORT=4001 npm run sprint[90m4[90m:server[39m[K
+[K[3A[44C[1m[31mc[1m[31md[0m[39m[3B[K[3A[45C[0m[32mc[0m[32md[39m[32mc[32md[32m [39m[32mc[32md[39m[39m [39ms[K[1B[K[1B[K[1B[K[3A[47C[4ms[24m[90merver[39m[4ms[39m[4mc[24m[39m [39m [39m [39m [90mripts[39m[4mc[39m[4mr[24m[4mr[39m[4mi[39m[4mp[39m[4mt[39m[4ms[1m[4m/[0m[24m[4ms[24m[0m[24m [?1l>[?2004l[1B]2;cd scripts]1;cd[1m[7m%[27m[1m[0m                                                                 ]2;lucas@Lucass-MacBook-Pro-3:~/Developer/Forest-Home/Forest/scripts]1;..orest/scripts]7;file://Lucass-MacBook-Pro-3.local/Users/lucas/Developer/Forest-Home/Forest/scripts\[0m[27m[24m[J(base) lucas@Lucass-MacBook-Pro-3 scripts % [K[?1h=[?2004hl[32ml[39m[32ml[39m[90ms[39m[32ml[32ms[39m[?1l>[?2004l
+]2;ls -G]1;ls[31mdev-all.sh[39;49m[0m        [31msprint4-server.sh[39;49m[0m
+[1m[7m%[27m[1m[0m                                                                 ]2;lucas@Lucass-MacBook-Pro-3:~/Developer/Forest-Home/Forest/scripts]1;..orest/scripts]7;file://Lucass-MacBook-Pro-3.local/Users/lucas/Developer/Forest-Home/Forest/scripts\[0m[27m[24m[J(base) lucas@Lucass-MacBook-Pro-3 scripts % [K[?1h=[?2004h.[32m.[39m[32m.[39m[90m/deploy-frontend.sh[39m[19D[32m.[32m/[39m[4m[32m.[4m[32m/[24m[39m[24m[39m.[24m[39m/
+[J[31mdev-all.sh[0m*         [J[31msprint4-server.sh[0m*[J[A[0m[27m[24m[44C./[90mdeploy-frontend.sh[39m[K[18D[4m[32m.[4m[32m/[24m[39m[39md[39me[39mp[39ml[39mo[39my[39m-[39mf[39mr[39mo[39mn[39mt[39me[39mn[39md[39m.[39ms[39mh[20D[24m[1m[31m.[24m[1m[31m/[1m[31md[1m[31me[1m[31mp[1m[31ml[1m[31mo[1m[31my[1m[31m-[1m[31mf[1m[31mr[1m[31mo[1m[31mn[1m[31mt[1m[31me[1m[31mn[1m[31md[1m[31m.[1m[31ms[1m[31mh[0m[39m[1C[1C[1m[31ms[0m[39m[0m[39m [90mh[39m[1m[31m.[0m[39m[0m[39m [39m [90msh[39m[1m[31md[0m[39m[0m[39m [39m [39m [90m.sh[39m[1m[31mn[0m[39m[0m[39m [39m [39m [39m [90md.sh[39m[1m[31me[0m[39m[0m[39m [39m [39m [39m [39m [90mnd.sh[39m[1m[31mt[0m[39m[0m[39m [39m [39m [39m [39m [39m [90mend.sh[39m[1m[31mn[0m[39m[0m[39m [39m [39m [39m [39m [39m [39m [90mtend.sh[39m[1m[31mo[0m[39m[0m[39m [39m [39m [39m [39m [39m [39m [39m [8D[90mntend.sh[39m[8D[1m[31mr[0m[39m[0m[39m [39m [39m [39m [39m [39m [39m [39m [39m [9D[90montend.sh[39m[9D[1m[31mf[0m[39m[0m[39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [10D[90mrontend.sh[39m[10D[1m[31m-[0m[39m[0m[39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [11D[90mfrontend.sh[39m[11D[1m[31my[0m[39m[0m[39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [12D[90m-frontend.sh[39m[12D[1m[31mo[0m[39m[0m[39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [13D[90my-frontend.sh[39m[13D[1m[31ml[0m[39m[0m[39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [14D[90moy-frontend.sh[39m[14D[1m[31mp[0m[39m[0m[39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [15D[90mloy-frontend.sh[39m[15D[1m[31me[0m[39m[0m[39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [16D[0m[39m[4m.[0m[39m[4m/[0m[39m[4md[0m[39m[4me[24m[90mploy-frontend.sh[39m[16D[4me[39m[4mv[24m[39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [39m [15D[24m[32m.[24m[32m/[24m[32md[24m[32me[24m[32mv[32m-all.sh[39m[1m [0m[0m [?1l>[?2004l
+[J]2;./dev-all.sh]1;./dev-all.sh[dev-all] Starting Sprint 4 on port 4001 (logs → /Users/lucas/Developer/Forest-Home/Forest/logs/sprint4-server.log)
+[dev-all] In another terminal: npm run sprint4:logs
+[dev-all] Sprint 4 is up. Starting Vite on port 3000...
+[dev-all] Open http://localhost:3000 — MVP: http://localhost:3000/mvp-v2
+
+
+> forest@0.0.0 dev
+> vite
+
+[1G[0KRe-optimizing dependencies because lockfile has changed
+
+  [32m[1mVITE[22m v5.4.21[39m  [2mready in [0m[1m471[22m[2m[0m ms[22m
+
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m3000[22m/[39m
+[2m  [32m➜[39m  [1mNetwork[22m[2m: use [22m[1m--host[22m[2m to expose[22m
+[2m[32m  ➜[39m[22m[2m  press [22m[1mh + enter[22m[2m to show help[22m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[1;1H[0J[2m10:47:03 PM[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/MVPV2.jsx, /src/index.css[22m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[1;1H[0J[2m10:47:12 PM[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/MVPV2.jsx, /src/index.css[22m [33m(x2)[39m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[1;1H[0J[2m10:47:26 PM[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/MVPV2.jsx, /src/index.css[22m [33m(x3)[39m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[1;1H[0J[2m10:47:42 PM[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/MVPV2.jsx, /src/index.css[22m [33m(x4)[39m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[1;1H[0J[2m10:48:01 PM[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/MVPV2.jsx, /src/index.css[22m [33m(x5)[39m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[1;1H[0J[2m10:48:56 PM[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/MVPV2.jsx, /src/index.css[22m [33m(x6)[39m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[1;1H[0J[2m10:49:14 PM[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/MVPV2.jsx, /src/index.css[22m [33m(x7)[39m

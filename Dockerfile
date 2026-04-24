@@ -7,8 +7,8 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
 COPY server ./server
-COPY src/lib/sprint4 ./src/lib/sprint4
+COPY src/lib/core ./src/lib/core
 
 EXPOSE 4001
 
-CMD ["node", "server/sprint4Server.js"]
+CMD ["node", "server/server.js"]

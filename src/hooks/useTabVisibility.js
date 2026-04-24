@@ -37,5 +37,10 @@ export const useTabVisibility = () => {
     return flushed
   }, [])
 
-  return { totalAwayMs, flushEvents, events: eventsRef }
+  const requeueEvents = useCallback((events) => {
+    if (!Array.isArray(events) || events.length === 0) return
+    eventsRef.current = [...events, ...eventsRef.current]
+  }, [])
+
+  return { totalAwayMs, flushEvents, requeueEvents, events: eventsRef }
 }

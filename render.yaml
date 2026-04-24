@@ -1,12 +1,12 @@
 services:
   - type: web
-    name: forest-sprint4-backend
+    name: forest-backend
     env: docker
     repo: https://github.com/lucasarano/Forest
     branch: main
     dockerfilePath: ./Dockerfile
     autoDeploy: true
-    healthCheckPath: /api/sprint4/health
+    healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
         value: production
