@@ -726,7 +726,7 @@ const AnalyticsView = ({ tree, password }) => {
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   <Card label="Total sessions" value={o.totalSessions} />
                   <Card label="Completed" value={`${o.completedCount} / ${o.totalSessions}`} sub={pct(o.completionRate)} />
-                  <Card label="Avg eval score" value={o.avgEvalScore ?? 0} />
+                  <Card label="Avg eval score" value={o.avgEvalScore ?? '—'} sub={o.avgEvalScore == null ? 'No engagement yet' : '/ 100'} />
                   <Card label="Avg mastery" value={pct(o.avgMasteryRate)} />
                 </div>
 
@@ -734,7 +734,9 @@ const AnalyticsView = ({ tree, password }) => {
                   <div className="rounded-xl border border-white/10 bg-white/5 p-5">
                     <h3 className="text-sm font-semibold mb-4 flex items-center gap-2"><TrendingUp size={14} className="text-emerald-400" /> Evaluation score</h3>
                     <Bar value={o.avgEvalScore ?? 0} max={100} color="bg-emerald-500" />
-                    <p className="mt-2 text-xs text-gray-400">{o.avgEvalScore ?? 0} / 100</p>
+                    <p className="mt-2 text-xs text-gray-400">
+                      {o.avgEvalScore == null ? 'No phase confidence yet' : `${o.avgEvalScore} / 100 — avg phase confidence across attempted phases`}
+                    </p>
                   </div>
 
                   <div className="rounded-xl border border-white/10 bg-white/5 p-5">
@@ -837,7 +839,7 @@ const AnalyticsView = ({ tree, password }) => {
                         <td className="px-4 py-3 font-mono text-xs text-emerald-300 underline-offset-2 hover:underline">{s.sessionId.slice(0, 8)}</td>
                         <td className="px-4 py-3 text-gray-300">{s.studentName || '—'}</td>
                         <td className="px-4 py-3 text-xs text-gray-400 capitalize">{s.phase}</td>
-                        <td className="px-4 py-3 text-right">{s.evalScore || '—'}</td>
+                        <td className="px-4 py-3 text-right">{s.evalScore ?? '—'}</td>
                         <td className="px-4 py-3 text-right">
                           <span className={s.masteryRate >= 70 ? 'text-emerald-400' : s.masteryRate >= 40 ? 'text-amber-400' : 'text-gray-400'}>
                             {s.masteryRate > 0 ? pct(s.masteryRate) : '—'}

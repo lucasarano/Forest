@@ -32,6 +32,26 @@ const sessionMasteryRate = (state) => {
   return round1pct(mastered / nodes.length)
 }
 
+// Eval score: average phase confidence across all engaged phases, scaled to 0–100.
+// A phase is "engaged" if the student has attempted it (attempts > 0) inside a
+// non-skipped node. Returns null when no phase has any evidence yet.
+const sessionEvalScore = (state) => {
+  const nodes = Object.values(safeNodes(state))
+  let sum = 0
+  let count = 0
+  for (const node of nodes) {
+    if (isSkipped(node)) continue
+    for (const ph of Object.values(node.phases || {})) {
+      if (!Number.isFinite(ph.confidence)) continue
+      if (safeNum(ph.attempts) <= 0 && ph.state !== 'passed') continue
+      sum += ph.confidence
+      count += 1
+    }
+  }
+  if (count === 0) return null
+  return Math.round((sum / count) * 100)
+}
+
 const countSpeechResponses = (events) =>
   (events || []).filter((e) => e.event_type === 'turn' && e?.payload?.decision?.via === 'speech').length
 
@@ -75,6 +95,8 @@ export const buildAnalytics = ({ sessions, concepts, eventsBySession }) => {
   let sumTurns = 0
   let sumTabAway = 0
   let sumSpeech = 0
+  let sumEval = 0
+  let evalCount = 0
 
   const students = []
   const nodeAgg = new Map() // nodeId → { title, sessions, mastered, skipped, sumAttempts }
@@ -91,11 +113,13 @@ export const buildAnalytics = ({ sessions, concepts, eventsBySession }) => {
     const turns = safeNum(state.turnIndex ?? s.turn_index)
     const tabAwayMs = computeTabAwayMs(events)
     const speechResponses = countSpeechResponses(events)
+    const evalScore = sessionEvalScore(state)
 
     sumMastery += masteryRate
     sumTurns += turns
     sumTabAway += tabAwayMs
     sumSpeech += speechResponses
+    if (evalScore !== null) { sumEval += evalScore; evalCount += 1 }
 
     students.push({
       sessionId: s.id,
@@ -104,7 +128,7 @@ export const buildAnalytics = ({ sessions, concepts, eventsBySession }) => {
       conceptTitle: conceptTitles.get(s.concept_id) || '',
       phase: currentPhase(state),
       status: state.status || s.status || 'active',
-      evalScore: null,
+      evalScore,
       masteryRate,
       turns,
       tabAwayMs,
@@ -183,7 +207,7 @@ export const buildAnalytics = ({ sessions, concepts, eventsBySession }) => {
     avgTurns: Math.round((sumTurns / total) * 10) / 10,
     avgTabAwayMs: Math.round(sumTabAway / total),
     avgSpeechResponses: round2(sumSpeech / total),
-    avgEvalScore: null,
+    avgEvalScore: evalCount > 0 ? Math.round(sumEval / evalCount) : null,
   }
 
   return { overview, nodes, students, misconceptions, skipReasons }
