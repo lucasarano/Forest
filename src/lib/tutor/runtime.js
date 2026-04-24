@@ -33,6 +33,8 @@ import {
   recordEvidence,
   setOffer,
   setPhaseState,
+  setRecallPlan,
+  setRestartAvailable,
   withNode,
 } from './state.js'
 import { route as routeGlobal, phaseAfter, firstUnsatisfiedPhase } from './agents/phaseRouter.js'
@@ -62,18 +64,55 @@ const PHASE_MODULES = {
   [PHASES.RECALL]: recall,
 }
 
+const QUICK_PREREQUISITE = 'quick_prerequisite'
+
 const trimText = (s, max = 80) => {
   if (!s) return ''
   const flat = String(s).replace(/\s+/g, ' ').trim()
   return flat.length > max ? `${flat.slice(0, max)}…` : flat
 }
 
+const lastTutorMessage = (node) => {
+  const msgs = node?.messages || []
+  for (let i = msgs.length - 1; i >= 0; i -= 1) {
+    if (msgs[i].role === MESSAGE_ROLES.TUTOR || msgs[i].role === MESSAGE_ROLES.SYSTEM) {
+      return msgs[i].content || ''
+    }
+  }
+  return ''
+}
+
+const isShortAffirmation = (text) =>
+  /^(y|yes|yeah|yep|sure|ok|okay|makes sense|got it|i get it|understood|sounds good)[.! ]*$/i
+    .test(`${text || ''}`.trim())
+
+const isComprehensionCheckAccept = ({ node, studentMessage }) => {
+  if (!isShortAffirmation(studentMessage)) return false
+  const last = lastTutorMessage(node).toLowerCase()
+  return (
+    /\bmake[s]? sense\b/.test(last) ||
+    /\bso far\?*$/.test(last.trim()) ||
+    /\bfollowing\b/.test(last) ||
+    /\bwith me\b/.test(last)
+  )
+}
+
+const isQuickPrerequisiteNode = (node) => node?.detourKind === QUICK_PREREQUISITE
+
 // Build the kwargs passed into phase agents. Goals and goalsCovered are only
-// meaningful on the root node; children never have their own goals.
-const agentKwargs = (state, node) => ({
-  goals: node?.isRoot ? (state.conceptGoals || []) : [],
-  goalsCovered: node?.isRoot ? (state.goalsCovered || []) : [],
-})
+// meaningful on the root node; children never have their own goals. The
+// goalsCovered array is resolved per-phase so each phase sees its own coverage
+// state (explanation/causality/transfer have independent gates).
+const agentKwargs = (state, node, phaseOverride = null) => {
+  const phase = phaseOverride || node?.currentPhase
+  if (!node?.isRoot) return { goals: [], goalsCovered: [] }
+  const goals = state.conceptGoals || []
+  const byPhase = state.goalsCoveredByPhase || {}
+  const covered = Array.isArray(byPhase[phase])
+    ? byPhase[phase]
+    : (phase === PHASES.EXPLANATION ? (state.goalsCovered || []) : goals.map(() => false))
+  return { goals, goalsCovered: covered }
+}
 
 const logAgent = (agent, detail = {}) => {
   const ts = new Date().toISOString()
@@ -84,6 +123,23 @@ const logAgent = (agent, detail = {}) => {
 }
 
 export const initializeState = ({ concept }) => createInitialState({ concept })
+
+// ─── Public: restart a session with the same concept ──────────────
+// Wipes state back to fresh and generates the opening turn. Called when the
+// student chose "restart" from a recall miss.
+export const restartSession = async (inputState) => {
+  const rootNode = inputState.nodes?.[ROOT_NODE_ID]
+  const concept = {
+    id: inputState.conceptId,
+    title: rootNode?.title || '',
+    seedQuestion: rootNode?.question || '',
+    conceptSummary: inputState.conceptSummary || '',
+    conceptGoals: inputState.conceptGoals || [],
+  }
+  let fresh = createInitialState({ concept })
+  fresh = logEvent(fresh, 'session_restarted', { fromTurnIndex: inputState.turnIndex })
+  return await generateOpeningTurn(fresh)
+}
 
 // ─── Public: opening turn ─────────────────────────────────────────
 // Called once after session start so the student sees an explanation probe.
@@ -153,6 +209,19 @@ export const runTurn = async (inputState, { studentMessage }) => {
     intent = { intent: 'attempt', rationale: 'classifier_failed' }
   }
 
+  if (typeof mod.probe === 'function' && isComprehensionCheckAccept({ node: getActiveNode(state), studentMessage })) {
+    logAgent('CHECKIN_ACCEPT', { phase, node: activeNode.title, classifiedAs: intent.intent })
+    const probe = await mod.probe({
+      node: getActiveNode(state),
+      mode: 'checkin',
+      ...agentKwargs(state, getActiveNode(state)),
+    })
+    logAgent('PROBE:OUT', { phase, probe })
+    state = applyProbe(state, activeNode.id, phase, probe, PHASE_STATES.IN_PROGRESS)
+    state = logEvent(state, 'intent_handled', { intent: 'checkin_accept', phase, classifiedAs: intent.intent })
+    return { state, tutorMessage: probe, decision: { action: ACTIONS.CONTINUE, via: 'checkin_accept' } }
+  }
+
   if (intent.intent === 'accept') {
     logAgent('FULFILL_OFFER', { phase, node: activeNode.title })
     const text = await fulfillOffer({ node: getActiveNode(state), studentAnswer: studentMessage })
@@ -200,6 +269,8 @@ export const runTurn = async (inputState, { studentMessage }) => {
         // Preserve why we branched so the child chat can open with context.
         triggerStudentText: studentMessage,
         triggerProbe: activeNode.phases?.[phase]?.lastProbe || '',
+        detourKind: QUICK_PREREQUISITE,
+        prerequisiteTerm: term,
       }
       state = setOffer(state, offer)
       const tutorMessage = [
@@ -271,6 +342,12 @@ export const runTurn = async (inputState, { studentMessage }) => {
   // the phase evaluator run — it will score low and typically REMEDIATE, which
   // is fine: the next probe will take a different angle.
 
+  // ── Recall phase takes a separate path: evaluator is per-plan-entry and the
+  //    decision is simple correct/wrong with plan advancement in the runtime.
+  if (phase === PHASES.RECALL) {
+    return await runRecallTurn(state, { studentMessage })
+  }
+
   // 1. Phase evaluator produces structured observation.
   let evaluation
   try {
@@ -302,23 +379,27 @@ export const runTurn = async (inputState, { studentMessage }) => {
   })
 
   // Merge any goals the evaluator said were demonstrated on this turn into the
-  // root-level coverage tracker. Only applies on the root node's explanation phase.
+  // root-level coverage tracker. Applies on the root node during the three
+  // mastery phases (explanation, causality, transfer). Each phase has its own
+  // coverage array so all three gate advancement on all goals.
   if (
     getActiveNode(state)?.isRoot
-    && phase === PHASES.EXPLANATION
+    && (phase === PHASES.EXPLANATION || phase === PHASES.CAUSALITY || phase === PHASES.TRANSFER)
     && Array.isArray(evaluation.goalsAddressed)
     && evaluation.goalsAddressed.length > 0
   ) {
     const indices = evaluation.goalsAddressed.map((n) => Number(n) - 1).filter((i) => i >= 0)
-    const before = (state.goalsCovered || []).slice()
-    state = markGoalsCovered(state, indices)
-    const after = state.goalsCovered || []
+    const beforeByPhase = state.goalsCoveredByPhase || {}
+    const before = Array.isArray(beforeByPhase[phase]) ? beforeByPhase[phase].slice() : (state.conceptGoals || []).map(() => false)
+    state = markGoalsCovered(state, indices, phase)
+    const afterByPhase = state.goalsCoveredByPhase || {}
+    const after = afterByPhase[phase] || []
     const newlyCovered = (state.conceptGoals || [])
       .map((_, i) => (before[i] !== true && after[i] === true ? i + 1 : null))
       .filter(Boolean)
     if (newlyCovered.length) {
-      logAgent('GOALS_COVERED', { newly: newlyCovered, total: after.filter(Boolean).length, of: (state.conceptGoals || []).length })
-      state = logEvent(state, 'goals_covered', { newly: newlyCovered })
+      logAgent('GOALS_COVERED', { phase, newly: newlyCovered, total: after.filter(Boolean).length, of: (state.conceptGoals || []).length })
+      state = logEvent(state, 'goals_covered', { phase, newly: newlyCovered })
     }
   }
 
@@ -330,6 +411,7 @@ export const runTurn = async (inputState, { studentMessage }) => {
       micro = await explanation.microCausalCheck({
         node: getActiveNode(state),
         studentAnswer: studentMessage,
+        lastProbe: activeNode.phases[phase].lastProbe || '',
         ...agentKwargs(state, getActiveNode(state)),
       })
       logAgent('MICRO_CAUSAL:OUT', { stillHolds: micro?.stillHolds, rationale: micro?.rationale })
@@ -397,9 +479,8 @@ const applyDecision = async (inputState, decision, { studentMessage, evaluation 
     }
 
     case ACTIONS.GUIDE: {
-      // Teach forward with a worked step instead of re-lecturing. Only the
-      // explanation phase currently exposes a `guide` agent; other phases fall
-      // back to their remediation if they don't.
+      // Teach forward or ask a focused follow-up instead of re-lecturing.
+      // Phases without a guide agent fall back to their remediation agent.
       const guideFn = typeof mod.guide === 'function' ? mod.guide : mod.remediate
       logAgent('GUIDE', { phase, node: active.title })
       const text = await guideFn({ node: active, evaluation, ...agentKwargs(state, active) })
@@ -414,9 +495,92 @@ const applyDecision = async (inputState, decision, { studentMessage, evaluation 
         passes: active.phases[phase].passes + 1,
         passedAt: new Date().toISOString(),
       })
+
+      if (!active.isRoot && isQuickPrerequisiteNode(active) && phase === PHASES.EXPLANATION) {
+        state = setPhaseState(state, active.id, PHASES.CAUSALITY, PHASE_STATES.SKIPPED)
+        state = setPhaseState(state, active.id, PHASES.TRANSFER, PHASE_STATES.SKIPPED)
+        state = setPhaseState(state, active.id, PHASES.RECALL, PHASE_STATES.SKIPPED)
+
+        const child = getActiveNode(state)
+        const popped = returnToParent(state, { childNode: child, newChildStatus: NODE_STATES.MASTERED })
+        const parent = getActiveNode(popped)
+        const parentPhase = parent.currentPhase
+        const parentMod = PHASE_MODULES[parentPhase]
+        const term = child.prerequisiteTerm || child.title
+        const msg = `Good — that is enough to use **${term}** back in **${parent.title}**.`
+        let returned = appendMessage(popped, parent.id, {
+          role: MESSAGE_ROLES.SYSTEM,
+          content: msg,
+          phase: parentPhase,
+        })
+        const parentProbe = await parentMod.probe({
+          node: getActiveNode(returned),
+          mode: 'resume',
+          ...agentKwargs(returned, getActiveNode(returned)),
+        })
+        returned = applyProbe(returned, parent.id, parentPhase, parentProbe, PHASE_STATES.IN_PROGRESS)
+        returned = logEvent(returned, 'quick_prerequisite_returned', {
+          nodeId: child.id,
+          parentId: parent.id,
+          term,
+        })
+        return {
+          state: returned,
+          tutorMessage: `${msg}\n\n${parentProbe}`,
+          decision: { ...decision, action: ACTIONS.RETURN, via: 'quick_prerequisite' },
+        }
+      }
+
       const nextPhase = phaseAfter(phase)
+
+      // Root node: when transfer is satisfied, transition immediately into
+      // the RECALL phase and run the plan-based recall inline (3 questions
+      // per learning goal). No deferral — the homework ends when the plan
+      // completes or the student opts to restart.
+      if (nextPhase === PHASES.RECALL && active.isRoot) {
+        const goals = Array.isArray(state.conceptGoals) ? state.conceptGoals : []
+        const plan = recall.buildPlan({ goals })
+        state = setRecallPlan(state, plan)
+        state = withNode(state, active.id, (node) => ({
+          ...node,
+          currentPhase: PHASES.RECALL,
+          phases: {
+            ...node.phases,
+            [PHASES.RECALL]: { ...node.phases[PHASES.RECALL], state: PHASE_STATES.ACTIVE },
+          },
+        }))
+        const firstEntry = recall.currentEntry(plan)
+        const firstGoal = firstEntry && firstEntry.goalIndex !== null && firstEntry.goalIndex !== undefined
+          ? goals[firstEntry.goalIndex]
+          : null
+        logAgent('RECALL_PROBE', {
+          mode: 'initial',
+          goalIndex: firstEntry?.goalIndex ?? null,
+          attempt: firstEntry?.attempt ?? 0,
+        })
+        const firstProbe = await recall.probeForGoal({
+          node: getActiveNode(state),
+          goal: firstGoal,
+          goalIndex: firstEntry?.goalIndex ?? null,
+          attempt: firstEntry?.attempt ?? 0,
+          priorAsked: [],
+        })
+        logAgent('RECALL_PROBE:OUT', { probe: firstProbe })
+        const planWithAsked = {
+          ...plan,
+          entries: plan.entries.map((e, i) => (i === 0 ? { ...e, asked: firstProbe } : e)),
+        }
+        state = setRecallPlan(state, planWithAsked)
+        const total = plan.entries.length
+        const intro = `Great — you've covered explanation, causality, and transfer for **${active.title}**. One last thing: a quick recall check (${total} short question${total === 1 ? '' : 's'}) to make sure the key ideas stuck. You can answer in a sentence.`
+        state = appendMessage(state, active.id, { role: MESSAGE_ROLES.SYSTEM, content: intro, phase: PHASES.RECALL })
+        state = applyProbe(state, active.id, PHASES.RECALL, firstProbe, PHASE_STATES.ACTIVE)
+        state = logEvent(state, 'recall_plan_started', { total, goals: goals.length })
+        return { state, tutorMessage: `${intro}\n\n${firstProbe}`, decision }
+      }
+
       if (!nextPhase || nextPhase === PHASES.RECALL) {
-        // All phases except recall satisfied; schedule recall.
+        // Non-root child: defer recall and return to parent.
         state = setPhaseState(state, active.id, PHASES.RECALL, PHASE_STATES.DEFERRED)
         state = scheduleRecall(state, active.id)
         const nextNode = getActiveNode(state)
@@ -569,6 +733,8 @@ export const acceptSubtopicOffer = async (inputState) => {
     parentId: originalOffer.parentId,
     blockedPhase: originalOffer.blockedPhase,
     skippable: originalOffer.skippable,
+    detourKind: originalOffer.detourKind || null,
+    prerequisiteTerm: originalOffer.prerequisiteTerm || '',
   })
   state = logEvent(state, 'subtopic_opened', {
     parentId: originalOffer.parentId,
@@ -652,6 +818,126 @@ export const returnFromActiveNode = async (inputState, { viaSkip = true } = {}) 
   state = applyProbe(state, parent.id, parentPhase, probe, PHASE_STATES.IN_PROGRESS)
   const msg = `Returning to **${parent.title}**.\n\n${probe}`
   return { state, tutorMessage: msg }
+}
+
+// ─── Recall phase turn ────────────────────────────────────────────
+// Runs per-plan-entry: evaluate the student's answer against the current
+// recall question, then either advance the plan (correct) or coach + re-ask
+// (wrong). When the plan is complete, hand off to COMPLETE_NODE.
+const runRecallTurn = async (inputState, { studentMessage }) => {
+  let state = inputState
+  const active = getActiveNode(state)
+  const plan = state.recallPlan
+
+  if (!plan || !Array.isArray(plan.entries) || plan.entries.length === 0) {
+    // Defensive: plan missing. Complete the node rather than loop forever.
+    return await applyDecision(state, { action: ACTIONS.COMPLETE_NODE }, { studentMessage, evaluation: null })
+  }
+
+  const entry = recall.currentEntry(plan)
+  if (!entry) {
+    return await applyDecision(state, { action: ACTIONS.COMPLETE_NODE }, { studentMessage, evaluation: null })
+  }
+
+  const goals = Array.isArray(state.conceptGoals) ? state.conceptGoals : []
+  const goal = entry.goalIndex !== null && entry.goalIndex !== undefined ? goals[entry.goalIndex] : null
+
+  let evaluation
+  try {
+    logAgent('RECALL_EVALUATE', { node: active.title, goalIndex: entry.goalIndex, attempt: entry.attempt })
+    evaluation = await recall.evaluate({ node: active, studentAnswer: studentMessage, goal })
+    logAgent('RECALL_EVALUATE:OUT', {
+      correct: evaluation.correct,
+      confidence: evaluation.confidence,
+      rationale: evaluation.rationale,
+    })
+  } catch (error) {
+    logAgent('RECALL_EVALUATE:ERR', { error: error.message })
+    return composeFailureTurn(state, active.id, PHASES.RECALL, error)
+  }
+
+  state = recordEvidence(state, active.id, PHASES.RECALL, {
+    confidence: evaluation.confidence,
+    rationale: evaluation.rationale,
+    probe: active.phases[PHASES.RECALL].lastProbe || '',
+    score: evaluation.confidence,
+    raw: evaluation,
+  })
+
+  if (!evaluation.correct) {
+    // Coach with the correct idea and re-ask the same question.
+    logAgent('RECALL_GUIDE', { node: active.title, goalIndex: entry.goalIndex })
+    const text = await recall.guide({ node: active, evaluation, goal })
+    logAgent('RECALL_GUIDE:OUT', { text })
+    const updatedPlan = {
+      ...plan,
+      totalWrong: (plan.totalWrong || 0) + 1,
+      entries: plan.entries.map((e, i) => (
+        i === plan.currentIndex ? { ...e, status: 'wrong', answer: studentMessage } : e
+      )),
+    }
+    state = setRecallPlan(state, updatedPlan)
+    state = setRestartAvailable(state, true)
+    state = applyProbe(state, active.id, PHASES.RECALL, text, PHASE_STATES.IN_PROGRESS)
+    state = logEvent(state, 'recall_wrong', {
+      goalIndex: entry.goalIndex,
+      attempt: entry.attempt,
+      totalWrong: updatedPlan.totalWrong,
+    })
+    return { state, tutorMessage: text, decision: { action: ACTIONS.GUIDE, via: 'recall_wrong', phase: PHASES.RECALL } }
+  }
+
+  // Correct — mark entry passed and advance the plan index.
+  const priorAsked = plan.entries
+    .map((e) => e?.asked)
+    .filter(Boolean)
+  const advanced = {
+    ...plan,
+    currentIndex: plan.currentIndex + 1,
+    entries: plan.entries.map((e, i) => (
+      i === plan.currentIndex ? { ...e, status: 'passed', answer: studentMessage } : e
+    )),
+  }
+  state = setRecallPlan(state, advanced)
+  state = logEvent(state, 'recall_correct', { goalIndex: entry.goalIndex, attempt: entry.attempt })
+
+  if (recall.planComplete(advanced)) {
+    // All recall questions answered correctly — finish the node.
+    return await applyDecision(state, { action: ACTIONS.COMPLETE_NODE, phase: PHASES.RECALL }, { studentMessage, evaluation })
+  }
+
+  // Generate the next probe for the new current entry.
+  const nextEntry = recall.currentEntry(advanced)
+  const nextGoal = nextEntry && nextEntry.goalIndex !== null && nextEntry.goalIndex !== undefined
+    ? goals[nextEntry.goalIndex]
+    : null
+  logAgent('RECALL_PROBE', {
+    mode: 'continue',
+    goalIndex: nextEntry?.goalIndex ?? null,
+    attempt: nextEntry?.attempt ?? 0,
+  })
+  const nextProbe = await recall.probeForGoal({
+    node: active,
+    goal: nextGoal,
+    goalIndex: nextEntry?.goalIndex ?? null,
+    attempt: nextEntry?.attempt ?? 0,
+    priorAsked,
+  })
+  logAgent('RECALL_PROBE:OUT', { probe: nextProbe })
+
+  const planWithAsked = {
+    ...advanced,
+    entries: advanced.entries.map((e, i) => (
+      i === advanced.currentIndex ? { ...e, asked: nextProbe } : e
+    )),
+  }
+  state = setRecallPlan(state, planWithAsked)
+  state = applyProbe(state, active.id, PHASES.RECALL, nextProbe, PHASE_STATES.ACTIVE)
+  return {
+    state,
+    tutorMessage: nextProbe,
+    decision: { action: ACTIONS.CONTINUE, via: 'recall_advance', phase: PHASES.RECALL },
+  }
 }
 
 // ─── internal helpers ────────────────────────────────────────────

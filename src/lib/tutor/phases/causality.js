@@ -19,21 +19,26 @@ const nodeContext = (node) => [
 
 // Internal coverage checklist — scope hint for the agent, NOT a script to
 // paraphrase to the student.
-const goalsBlock = ({ goals = [] } = {}) => {
+const goalsBlock = ({ goals = [], goalsCovered = [] } = {}) => {
   if (!Array.isArray(goals) || goals.length === 0) return ''
-  const lines = goals.map((g, i) => `  ${i + 1}. ${g}`)
+  const lines = goals.map((g, i) => {
+    const covered = goalsCovered[i] === true
+    return `  ${i + 1}. [${covered ? 'x' : ' '}] ${g}`
+  })
   return [
     'Internal coverage checklist (scope hint only — NOT a question bank, NOT to be read aloud):',
     ...lines,
     'Use these to stay in scope and avoid drifting into dimensions the goals do not mention.',
     'Do NOT paraphrase a checklist item into a probe; do NOT enumerate the terms inside one.',
+    'For causality: probe mechanism on an UNCOVERED goal first; only revisit covered ones if',
+    'the student has just made a mechanistic error.',
   ].join('\n')
 }
 
 // ── A. Causal Probe ───────────────────────────────────────────────
 // Asks ONE mechanism/intervention question.
-export const probe = async ({ node, mode = 'initial', goals = [] }) => {
-  const goalsHint = node?.isRoot ? goalsBlock({ goals }) : ''
+export const probe = async ({ node, mode = 'initial', goals = [], goalsCovered = [] }) => {
+  const goalsHint = node?.isRoot ? goalsBlock({ goals, goalsCovered }) : ''
   const systemPrompt = [
     'You are the Causal Probe Agent.',
     'Ask ONE question about mechanism or intervention. GROUND IT IN A CONCRETE CASE DRAWN FROM',
@@ -78,10 +83,13 @@ const evalSchema = z.object({
   localOrPrerequisite: z.enum(['local', 'prerequisite', 'unclear']),
   suspectedPrerequisiteGap: z.string().nullable().optional(),
   explanationFoundationWeak: z.boolean(),
+  // 1-indexed goal numbers whose CAUSAL MECHANISM the student's answer demonstrated clearly
+  // on THIS turn. Only used when the concept has required learning goals.
+  goalsAddressed: z.array(z.number().int()).optional().default([]),
 })
 
-export const evaluate = async ({ node, studentAnswer, goals = [] }) => {
-  const goalsHint = node?.isRoot ? goalsBlock({ goals }) : ''
+export const evaluate = async ({ node, studentAnswer, goals = [], goalsCovered = [] }) => {
+  const goalsHint = node?.isRoot ? goalsBlock({ goals, goalsCovered }) : ''
   const systemPrompt = [
     'You are the Causal Evaluator. You observe ONE thing: how well the STUDENT\'S current answer',
     'shows they understand why and how the concept works.',
@@ -98,6 +106,16 @@ export const evaluate = async ({ node, studentAnswer, goals = [] }) => {
     '- "confidence" is the overall QUALITY of the student\'s causal reasoning on this turn',
     '  (0 = none, 1 = clear and correct mechanism). NOT how sure you are of your judgement.',
     '',
+    node?.isRoot && Array.isArray(goals) && goals.length > 0
+      ? [
+          'REQUIRED LEARNING GOALS — the user prompt lists numbered goals. For "goalsAddressed",',
+          'return the 1-indexed numbers of ONLY those goals whose CAUSAL MECHANISM (why/how) the',
+          'student CLEARLY demonstrated on THIS turn. Be strict: vague or tangential references do',
+          'not count. If none are demonstrated, return []. Already-covered goals may still be',
+          'included if the student re-demonstrated them; dedup happens upstream.',
+        ].join('\n')
+      : 'This concept has no explicit learning goals; return [] for "goalsAddressed".',
+    '',
     'Return STRICT JSON:',
     '  explainedCauseAndEffect: 0..1',
     '  understandsDirectionality: 0..1',
@@ -108,6 +126,7 @@ export const evaluate = async ({ node, studentAnswer, goals = [] }) => {
     '  localOrPrerequisite: "local" | "prerequisite" | "unclear"',
     '  suspectedPrerequisiteGap: "..." or null  // small concept name if a missing idea blocks mechanism',
     '  explanationFoundationWeak: boolean  // if causal failure actually exposes a weaker earlier explanation',
+    '  goalsAddressed: [1,2,...]  // 1-indexed goal numbers whose mechanism was demonstrated on THIS turn; [] if none',
   ].join('\n')
   const userPrompt = [
     nodeContext(node),
@@ -121,20 +140,28 @@ export const evaluate = async ({ node, studentAnswer, goals = [] }) => {
 // ── C. Causal Remediation ─────────────────────────────────────────
 // Narrow: used when the student said something mechanistically wrong (magical
 // language, reversed causality). For vague-but-not-wrong answers, use guide.
-export const remediate = async ({ node, evaluation, goals = [] }) => {
-  const goalsHint = node?.isRoot ? goalsBlock({ goals }) : ''
+export const remediate = async ({ node, evaluation, goals = [], goalsCovered = [] }) => {
+  const goalsHint = node?.isRoot ? goalsBlock({ goals, goalsCovered }) : ''
   const systemPrompt = [
     'You are the Causal Remediation Agent.',
-    'The student said something mechanistically incorrect. Correct it using a CONCRETE tiny',
-    'example DRAWN FROM THIS CONCEPT — a specific scenario native to the topic, not an abstract',
-    'phrasing and not an example imported from an unrelated domain. Name the specific wrong move,',
-    'show what actually happens in the worked case, then ask ONE follow-up why/how question',
-    'grounded in that same scenario. Use numbers ONLY if the goals are quantitative.',
+    'The student said something mechanistically incorrect. TEACH them the right mechanism using a',
+    'CONCRETE example DRAWN FROM THIS CONCEPT — a specific scenario native to the topic, not an',
+    'abstract phrasing and not an example imported from an unrelated domain.',
+    '',
+    'Structure:',
+    '1. Name the specific wrong move briefly (one sentence) so the student knows what is being',
+    '   corrected. Do not pile on; one clear "actually, the cause and effect go the other way"',
+    '   is enough.',
+    '2. Walk through what ACTUALLY happens in the worked case — 4-6 short lines showing the',
+    '   cause producing the effect, step by step. Specific objects, parts, or events.',
+    '3. Add 1-2 sentences naming the underlying mechanism — WHY it works that way, what the',
+    '   student should remember. This is the part that prevents the same mistake again.',
+    '4. End with ONE follow-up why/how question grounded in that same scenario.',
     '',
     'STAY INSIDE THE GOAL SCOPE — do not introduce dimensions the goals do not mention.',
+    'Use numbers ONLY if the goals are quantitative. Tell the student they can answer in words.',
     '',
-    'Total length: 3-4 short sentences or a 3-line mini-trace. Do NOT do a full lecture. Do NOT',
-    'restart the concept. Tell the student they can answer in words.',
+    'Aim for 130-180 words. Real teaching, not a one-liner correction.',
   ].join('\n')
   const userPrompt = [
     nodeContext(node),
@@ -145,27 +172,33 @@ export const remediate = async ({ node, evaluation, goals = [] }) => {
     `Understands directionality: ${evaluation.understandsDirectionality}`,
     'Write the remediation + follow-up question.',
   ].filter(Boolean).join('\n\n')
-  return callText({ systemPrompt, userPrompt, temperature: 0.4, maxCompletionTokens: 220 })
+  return callText({ systemPrompt, userPrompt, temperature: 0.4, maxCompletionTokens: 400 })
 }
 
 // ── C2. Causal Guided Teaching ───────────────────────────────────
 // Teach forward through the mechanism with a concrete worked step. Used when
 // the student is vague or partial but not factually wrong.
-export const guide = async ({ node, evaluation, goals = [] }) => {
-  const goalsHint = node?.isRoot ? goalsBlock({ goals }) : ''
+export const guide = async ({ node, evaluation, goals = [], goalsCovered = [] }) => {
+  const goalsHint = node?.isRoot ? goalsBlock({ goals, goalsCovered }) : ''
   const systemPrompt = [
     'You are the Causal Guided Teaching Agent. The student has not yet articulated the',
-    'mechanism clearly. Do NOT re-ask "why does this happen?" — TEACH FORWARD.',
+    'mechanism clearly. Do NOT re-ask "why does this happen?" — TEACH FORWARD with substance.',
+    'Most of the response is teaching; the prediction question is a small tail at the end.',
     '',
     'Approach:',
-    '1. Pick a tiny concrete scenario DRAWN FROM THIS CONCEPT and walk ONE causal step yourself.',
-    '   Use specific objects/parts/steps native to the topic. Show the CAUSE producing the EFFECT',
-    '   in one move. Use numbers ONLY if the goals are quantitative.',
-    '2. Then hand the student the NEXT causal step as a prediction question. "If we change X,',
+    '1. Pick a concrete scenario DRAWN FROM THIS CONCEPT and walk through one or two causal steps',
+    '   yourself. Use specific objects/parts/steps native to the topic. Show the CAUSE producing',
+    '   the EFFECT — make the mechanism visible step by step. Use numbers ONLY if the goals are',
+    '   quantitative. 4-6 short lines or bullets.',
+    '2. Add 1-2 sentences naming the IDEA behind the mechanism — what makes the cause produce',
+    '   that effect, what the student should hold onto. This is the part that turns a trace into',
+    '   understanding.',
+    '3. Then hand the student the NEXT causal step as a prediction question. "If we change X,',
     '   what happens to Y, and why?" — not "explain the mechanism."',
     '',
     'Style:',
-    '- Under 100 words. Bullets or a 3-line mini-trace are fine.',
+    '- Aim for 110-160 words. Substantive teaching, not a one-liner.',
+    '- Bullets or a mini-trace are fine.',
     '- Concrete, not abstract. Name actual specifics from this topic.',
     '- STAY INSIDE THE GOAL SCOPE — no off-goal dimensions.',
     '- Do NOT import examples from unrelated domains.',
@@ -179,11 +212,11 @@ export const guide = async ({ node, evaluation, goals = [] }) => {
     `Signals — confidence=${evaluation?.confidence ?? 'n/a'}, magicalLanguage=${evaluation?.magicalLanguage ?? false}`,
     'Write the guided causal step + prediction question now.',
   ].filter(Boolean).join('\n\n')
-  return callText({ systemPrompt, userPrompt, temperature: 0.5, maxCompletionTokens: 240 })
+  return callText({ systemPrompt, userPrompt, temperature: 0.5, maxCompletionTokens: 400 })
 }
 
 // ── D. Causal Phase Router ────────────────────────────────────────
-export const routePhase = ({ evaluation, phaseRecord }) => {
+export const routePhase = ({ node, evaluation, phaseRecord, goals = [], goalsCovered = [] }) => {
   const threshold = PASS_THRESHOLDS[PHASES.CAUSALITY]
   const {
     confidence,
@@ -215,5 +248,17 @@ export const routePhase = ({ evaluation, phaseRecord }) => {
     }
     return { action: ACTIONS.GUIDE, phase: PHASES.CAUSALITY }
   }
+
+  // Confidence high enough, but gate advancement on goal coverage. For the root
+  // node we require EVERY goal to have its mechanism demonstrated at least once
+  // before moving on to transfer.
+  const goalsGated = node?.isRoot && Array.isArray(goals) && goals.length > 0
+  if (goalsGated) {
+    const allCovered = goals.every((_, i) => goalsCovered[i] === true)
+    if (!allCovered) {
+      return { action: ACTIONS.CONTINUE, phase: PHASES.CAUSALITY, reason: 'goals_not_covered' }
+    }
+  }
+
   return { action: ACTIONS.ADVANCE, phase: PHASES.CAUSALITY }
 }

@@ -56,6 +56,8 @@ export const createNode = ({
   isRoot = false,
   reason = '',
   skippable = true,
+  detourKind = null,
+  prerequisiteTerm = '',
   depth = 0,
 }) => ({
   id,
@@ -65,6 +67,8 @@ export const createNode = ({
   isRoot,
   skippable: isRoot ? false : !!skippable,
   reason,        // why this node was opened (from subtopic inference)
+  detourKind,    // e.g. quick_prerequisite for "what is X?" vocabulary detours
+  prerequisiteTerm,
   depth,
   status: isRoot ? NODE_STATES.ACTIVE : NODE_STATES.LOCKED,
   phases: createPhaseRecords(),
@@ -91,12 +95,23 @@ export const createInitialState = ({ concept }) => {
     isRoot: true,
     depth: 0,
   })
+  const emptyCoverage = () => conceptGoals.map(() => false)
   return {
     version: 1,
     conceptId: concept?.id || '',
     conceptSummary: concept?.conceptSummary || '',
     conceptGoals,
-    goalsCovered: conceptGoals.map(() => false),
+    // Flat coverage kept for backward compat; derived from explanation-phase coverage.
+    goalsCovered: emptyCoverage(),
+    // New per-phase coverage: each goal must be demonstrated in each of the first
+    // three phases (explanation, causality, transfer) before that phase can advance.
+    goalsCoveredByPhase: {
+      [PHASES.EXPLANATION]: emptyCoverage(),
+      [PHASES.CAUSALITY]: emptyCoverage(),
+      [PHASES.TRANSFER]: emptyCoverage(),
+    },
+    // Recall plan built when recall phase starts — 3 simple questions per goal.
+    recallPlan: null,
     nodes: { [ROOT_NODE_ID]: root },
     stack: [ROOT_NODE_ID],
     recallQueue: [],   // [{ nodeId, readyAtTurn, reason }]
@@ -106,28 +121,61 @@ export const createInitialState = ({ concept }) => {
     completed: false,
     status: 'active',
     offer: null,       // pending subtopic offer awaiting student choice
+    restartAvailable: false, // set when student is invited to restart from recall
     events: [],        // lightweight event log
   }
 }
 
-// Mark one or more goal indices as covered. No-op if goals are not tracked
-// or the state has no goals configured.
-export const markGoalsCovered = (state, indices) => {
+// Mark one or more goal indices as covered for a given phase. Keeps the flat
+// `state.goalsCovered` in sync with the explanation phase so existing UI still
+// shows goal progress while new per-phase tracking drives the phase routers.
+export const markGoalsCovered = (state, indices, phase = PHASES.EXPLANATION) => {
   if (!Array.isArray(state.conceptGoals) || state.conceptGoals.length === 0) return state
   const ints = (Array.isArray(indices) ? indices : [])
     .map((i) => Number(i))
     .filter((i) => Number.isInteger(i) && i >= 0 && i < state.conceptGoals.length)
   if (!ints.length) return state
-  const current = Array.isArray(state.goalsCovered) && state.goalsCovered.length === state.conceptGoals.length
+
+  const coverageByPhase = state.goalsCoveredByPhase && typeof state.goalsCoveredByPhase === 'object'
+    ? state.goalsCoveredByPhase
+    : {
+      [PHASES.EXPLANATION]: state.conceptGoals.map(() => false),
+      [PHASES.CAUSALITY]: state.conceptGoals.map(() => false),
+      [PHASES.TRANSFER]: state.conceptGoals.map(() => false),
+    }
+  const phaseArr = Array.isArray(coverageByPhase[phase]) && coverageByPhase[phase].length === state.conceptGoals.length
+    ? coverageByPhase[phase]
+    : state.conceptGoals.map(() => false)
+
+  let changed = false
+  const nextPhaseArr = phaseArr.slice()
+  for (const i of ints) {
+    if (!nextPhaseArr[i]) { nextPhaseArr[i] = true; changed = true }
+  }
+  if (!changed) return state
+
+  const nextCoverageByPhase = { ...coverageByPhase, [phase]: nextPhaseArr }
+
+  // Keep the legacy flat `goalsCovered` mirrored to explanation coverage for UI.
+  const flatCurrent = Array.isArray(state.goalsCovered) && state.goalsCovered.length === state.conceptGoals.length
     ? state.goalsCovered
     : state.conceptGoals.map(() => false)
-  let changed = false
-  const next = current.slice()
-  for (const i of ints) {
-    if (!next[i]) { next[i] = true; changed = true }
-  }
-  return changed ? { ...state, goalsCovered: next } : state
+  const nextFlat = phase === PHASES.EXPLANATION ? nextPhaseArr.slice() : flatCurrent
+
+  return { ...state, goalsCovered: nextFlat, goalsCoveredByPhase: nextCoverageByPhase }
 }
+
+// Are all goals covered for the given phase?
+export const allGoalsCoveredForPhase = (state, phase) => {
+  if (!Array.isArray(state.conceptGoals) || state.conceptGoals.length === 0) return true
+  const arr = state.goalsCoveredByPhase?.[phase]
+  if (!Array.isArray(arr) || arr.length !== state.conceptGoals.length) return false
+  return arr.every(Boolean)
+}
+
+export const setRecallPlan = (state, recallPlan) => ({ ...state, recallPlan })
+
+export const setRestartAvailable = (state, available) => ({ ...state, restartAvailable: !!available })
 
 // Immutable update helper: return a shallow-cloned state with the given node replaced.
 export const withNode = (state, nodeId, updater) => {
@@ -219,6 +267,8 @@ export const pushSubtopic = (state, {
   parentId,
   blockedPhase,
   skippable = true,
+  detourKind = null,
+  prerequisiteTerm = '',
 }) => {
   const depth = state.stack.length
   const newId = uuid()
@@ -230,6 +280,8 @@ export const pushSubtopic = (state, {
     isRoot: false,
     reason,
     skippable,
+    detourKind,
+    prerequisiteTerm,
     depth,
   })
   child.returnBlockedAt = blockedPhase
@@ -273,6 +325,9 @@ export const snapshotForClient = (state) => ({
   conceptSummary: state.conceptSummary || '',
   conceptGoals: Array.isArray(state.conceptGoals) ? state.conceptGoals : [],
   goalsCovered: Array.isArray(state.goalsCovered) ? state.goalsCovered : [],
+  goalsCoveredByPhase: state.goalsCoveredByPhase || null,
+  recallPlan: state.recallPlan || null,
+  restartAvailable: !!state.restartAvailable,
   turnIndex: state.turnIndex,
   startedAt: state.startedAt,
   lastTurnAt: state.lastTurnAt,

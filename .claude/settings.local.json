@@ -5,7 +5,9 @@
       "Bash(node --check server/db.js)",
       "Bash(node --check server/teacherAnalytics.js)",
       "Bash(node --check server/server.js)",
-      "Bash(node --input-type=module -e ' *)"
+      "Bash(node --input-type=module -e ' *)",
+      "Bash(supabase --version)",
+      "Bash(supabase status *)"
     ]
   }
 }

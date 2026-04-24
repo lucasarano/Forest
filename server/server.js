@@ -34,6 +34,7 @@ import {
   acceptSubtopicOffer,
   skipSubtopicOffer,
   returnFromActiveNode,
+  restartSession,
 } from '../src/lib/tutor/runtime.js'
 import { DEFAULT_TIME_BUDGET_MS } from '../src/lib/tutor/constants.js'
 
@@ -446,6 +447,27 @@ const handler = async (request, response) => {
     }})
     const snapshot = await snapshotFor(session, result.state)
     return sendJson(response, 200, { snapshot, tutorMessage: result.tutorMessage }, origin)
+  }
+
+  if (url.pathname === '/api/tutor/restart') {
+    const token = `${body.token || ''}`
+    const session = await getTutorSessionByToken(token)
+    if (!session) return sendJson(response, 401, { error: 'Session not found.' }, origin)
+    try {
+      const result = await restartSession(session.state)
+      await persistTurn({
+        sessionToken: token,
+        sessionId: session.id,
+        state: result.state,
+        extraEvent: { eventType: 'session_restarted', payload: {} },
+      })
+      log('TUTOR:RESTART', `session="${session.id}"`)
+      const snapshot = await snapshotFor(session, result.state)
+      return sendJson(response, 200, { snapshot, tutorMessage: result.tutorMessage }, origin)
+    } catch (error) {
+      log('TUTOR:RESTART:ERR', error.stack || error.message)
+      return sendJson(response, 500, { error: error.message || 'Restart failed.' }, origin)
+    }
   }
 
   if (url.pathname === '/api/tutor/return') {

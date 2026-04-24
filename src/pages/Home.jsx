@@ -1,12 +1,24 @@
 import React from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { ArrowRight } from 'lucide-react'
+import { ArrowRight, LogOut } from 'lucide-react'
 import KnowledgeGraph from '../components/KnowledgeGraph'
 import Logo from '../components/Logo'
 import Button from '../components/Button'
+import { useAuth } from '../lib/auth'
 
 const Home = () => {
+  const { user, profile, signOut } = useAuth()
+  const navigate = useNavigate()
+
+  const studentHref = user ? '/learn' : '/login?role=student'
+  const teacherHref = user ? '/teacher' : '/login?role=teacher'
+
+  const handleSignOut = async () => {
+    await signOut()
+    navigate('/', { replace: true })
+  }
+
   return (
     <div className="min-h-screen relative overflow-hidden">
       <KnowledgeGraph opacity={0.35} />
@@ -15,6 +27,31 @@ const Home = () => {
         <div className="max-w-7xl 2xl:max-w-[1600px] mx-auto px-6 xl:px-8 2xl:px-12 py-4">
           <div className="flex items-center justify-between">
             <Logo size="md" clickable />
+            <div className="flex items-center gap-3 text-sm">
+              {user ? (
+                <>
+                  <span className="text-forest-light-gray hidden sm:inline">
+                    {profile?.display_name || user.email}
+                    {profile?.role && (
+                      <span className="ml-2 text-[10px] uppercase tracking-[0.2em] text-forest-emerald">{profile.role}</span>
+                    )}
+                  </span>
+                  <button
+                    onClick={handleSignOut}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-forest-border text-forest-light-gray hover:text-white hover:border-forest-emerald/50 transition text-xs"
+                  >
+                    <LogOut size={12} /> Sign out
+                  </button>
+                </>
+              ) : (
+                <Link
+                  to="/login"
+                  className="px-3 py-1.5 rounded-lg border border-forest-border text-forest-light-gray hover:text-white hover:border-forest-emerald/50 transition text-xs"
+                >
+                  Sign in
+                </Link>
+              )}
+            </div>
           </div>
         </div>
       </header>
@@ -44,7 +81,7 @@ const Home = () => {
             transition={{ delay: 0.2, duration: 0.6 }}
             className="grid grid-cols-1 md:grid-cols-3 gap-4 w-full max-w-3xl"
           >
-            <Link to="/learn" className="block">
+            <Link to={studentHref} className="block">
               <Button variant="primary" className="w-full text-lg px-6 py-5">
                 <span className="flex items-center justify-center gap-2">
                   Student
@@ -52,7 +89,7 @@ const Home = () => {
                 </span>
               </Button>
             </Link>
-            <Link to="/teacher" className="block">
+            <Link to={teacherHref} className="block">
               <Button variant="secondary" className="w-full text-lg px-6 py-5">
                 <span className="flex items-center justify-center gap-2">
                   Teacher

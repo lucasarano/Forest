@@ -1,8 +1,9 @@
 import React, { useState, useCallback, useEffect, useMemo } from 'react'
-import { Link } from 'react-router-dom'
-import { AlertCircle, BookOpen, Check, Download, Loader, Pencil, Plus, RefreshCw, Trash2, TrendingUp, Users, X, Zap } from 'lucide-react'
+import { Link, useNavigate } from 'react-router-dom'
+import { AlertCircle, BookOpen, Check, Download, Loader, LogOut, Pencil, Plus, RefreshCw, Trash2, TrendingUp, Users, X, Zap } from 'lucide-react'
 import Logo from '../components/Logo'
 import StudentDetail from '../components/teacher/StudentDetail'
+import { useAuth } from '../lib/auth'
 import {
   fetchTeacherTree,
   fetchTeacherAnalytics,
@@ -16,9 +17,9 @@ import {
   updateConcept,
   deleteConcept,
   fetchConcept,
-  getStoredAdminPassword,
-  storeAdminPassword,
 } from '../lib/api'
+
+const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD || ''
 
 const fmt = (ms) => {
   if (!ms) return '0s'
@@ -58,73 +59,43 @@ const exportCSV = (students, label) => {
 }
 
 const TeacherDashboard = () => {
-  const [password, setPassword] = useState(() => getStoredAdminPassword())
-  const [authed, setAuthed] = useState(false)
+  const { user, profile, signOut } = useAuth()
+  const navigate = useNavigate()
+  const password = ADMIN_PASSWORD
   const [mode, setMode] = useState('tree')
   const [tree, setTree] = useState({ courses: [] })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  const loadTree = useCallback(async (pw = password) => {
-    if (!pw) return
+  const loadTree = useCallback(async () => {
+    if (!password) {
+      setError('Missing VITE_ADMIN_PASSWORD — set it in your environment.')
+      return
+    }
     setLoading(true)
     setError('')
     try {
-      const res = await fetchTeacherTree(pw)
+      const res = await fetchTeacherTree(password)
       setTree(res || { courses: [] })
-      storeAdminPassword(pw)
-      setAuthed(true)
     } catch (err) {
       setError(err.message)
-      setAuthed(false)
     } finally {
       setLoading(false)
     }
   }, [password])
 
-  useEffect(() => {
-    if (password && !authed) loadTree(password)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  useEffect(() => { loadTree() }, [loadTree])
 
-  if (!authed) {
-    return (
-      <div className="min-h-screen bg-gray-950 flex items-center justify-center p-4">
-        <div className="w-full max-w-sm">
-          <div className="flex items-center gap-2 mb-8">
-            <Logo size={28} />
-            <span className="text-white font-semibold">Teacher Dashboard</span>
-          </div>
-          <div className="rounded-xl border border-white/10 bg-white/5 p-6 space-y-4">
-            <p className="text-sm text-gray-400">Enter the admin password to manage courses and view analytics.</p>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && loadTree()}
-              placeholder="Admin password"
-              className="w-full rounded-xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-white outline-none focus:border-emerald-500"
-            />
-            {error && <p className="text-xs text-red-400">{error}</p>}
-            <button
-              onClick={() => loadTree()}
-              disabled={loading || !password}
-              className="w-full py-3 bg-emerald-500 text-black font-medium rounded-xl text-sm hover:brightness-110 transition disabled:opacity-50 flex items-center justify-center gap-2"
-            >
-              {loading && <Loader size={14} className="animate-spin" />}
-              Sign in
-            </button>
-          </div>
-        </div>
-      </div>
-    )
+  const handleSignOut = async () => {
+    await signOut()
+    navigate('/', { replace: true })
   }
 
   return (
     <div className="min-h-screen bg-gray-950 text-white">
       <div className="border-b border-white/10 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Link to="/"><Logo size={24} /></Link>
+          <Link to="/"><Logo size="sm" /></Link>
           <span className="text-sm font-semibold text-white">Teacher Dashboard</span>
           <div className="ml-4 flex gap-1 rounded-lg border border-white/10 p-1">
             {['tree', 'analytics'].map((m) => (
@@ -138,9 +109,20 @@ const TeacherDashboard = () => {
             ))}
           </div>
         </div>
-        <button onClick={() => loadTree()} disabled={loading} className="p-2 rounded-lg border border-white/10 text-gray-400 hover:text-white hover:border-white/30 transition disabled:opacity-40">
-          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-        </button>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-gray-400 hidden sm:inline">
+            {profile?.display_name || user?.email}
+          </span>
+          <button onClick={() => loadTree()} disabled={loading} className="p-2 rounded-lg border border-white/10 text-gray-400 hover:text-white hover:border-white/30 transition disabled:opacity-40">
+            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+          </button>
+          <button
+            onClick={handleSignOut}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-gray-400 hover:text-white hover:border-white/30 transition text-xs"
+          >
+            <LogOut size={12} /> Sign out
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -778,11 +760,13 @@ const AnalyticsView = ({ tree, password }) => {
                 {data.misconceptions?.length > 0 && (
                   <div className="rounded-xl border border-white/10 bg-white/5 p-5">
                     <h3 className="text-sm font-semibold mb-3">Top misconceptions</h3>
-                    <div className="space-y-2">
+                    <div className="space-y-3">
                       {data.misconceptions.slice(0, 5).map((m) => (
-                        <div key={m.label} className="flex items-center gap-3">
-                          <span className="text-xs text-gray-300 flex-1">{m.label}</span>
-                          <span className="text-xs text-amber-400 font-medium w-16 text-right">{m.count}×</span>
+                        <div key={m.label} className="space-y-1.5">
+                          <div className="flex items-start justify-between gap-3">
+                            <span className="text-xs text-gray-300 break-words leading-relaxed">{m.label}</span>
+                            <span className="text-xs text-amber-400 font-medium shrink-0">{m.count}×</span>
+                          </div>
                           <Bar value={m.count} max={data.misconceptions[0]?.count || 1} color="bg-amber-500" />
                         </div>
                       ))}
@@ -817,7 +801,7 @@ const AnalyticsView = ({ tree, password }) => {
                         </td>
                         <td className="px-4 py-3 text-right text-gray-400">{n.skippedCount}</td>
                         <td className="px-4 py-3 text-right text-gray-400">{n.avgAttempts}</td>
-                        <td className="px-4 py-3 text-xs text-gray-500 max-w-xs truncate">{n.topMisconception || '—'}</td>
+                        <td className="px-4 py-3 text-xs text-gray-500 break-words leading-relaxed min-w-[12rem] max-w-md">{n.topMisconception || '—'}</td>
                       </tr>
                     ))}
                     {!data.nodes?.length && (
@@ -880,8 +864,8 @@ const AnalyticsView = ({ tree, password }) => {
                 {(data.misconceptions || []).map((m) => (
                   <div key={m.label} className="rounded-xl border border-white/10 bg-white/5 p-4">
                     <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <p className="text-sm text-white">{m.label}</p>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-white break-words leading-relaxed">{m.label}</p>
                         <p className="text-xs text-gray-500 mt-1">{m.nodeIds?.length} node(s) affected</p>
                       </div>
                       <span className="text-sm font-bold text-amber-400 shrink-0">{m.count}×</span>

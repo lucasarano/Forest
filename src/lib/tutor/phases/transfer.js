@@ -17,21 +17,26 @@ const nodeContext = (node) => [
 ].join('\n')
 
 // Internal coverage checklist — scope hint for the agent, NOT a script.
-const goalsBlock = ({ goals = [] } = {}) => {
+const goalsBlock = ({ goals = [], goalsCovered = [] } = {}) => {
   if (!Array.isArray(goals) || goals.length === 0) return ''
-  const lines = goals.map((g, i) => `  ${i + 1}. ${g}`)
+  const lines = goals.map((g, i) => {
+    const covered = goalsCovered[i] === true
+    return `  ${i + 1}. [${covered ? 'x' : ' '}] ${g}`
+  })
   return [
     'Internal coverage checklist (scope hint only — NOT a question bank, NOT to be read aloud):',
     ...lines,
     'Use these to stay in scope. Do NOT paraphrase a checklist item into a probe; do NOT enumerate',
     'the terms inside one.',
+    'For transfer: apply an UNCOVERED goal to a new context first. Only revisit covered ones if',
+    'the student\'s answer suggested the transfer failed on that goal.',
   ].join('\n')
 }
 
 // ── A. Transfer Probe ─────────────────────────────────────────────
 // Near-transfer first, then farther transfer if the student passes.
-export const probe = async ({ node, mode = 'near', goals = [] }) => {
-  const goalsHint = node?.isRoot ? goalsBlock({ goals }) : ''
+export const probe = async ({ node, mode = 'near', goals = [], goalsCovered = [] }) => {
+  const goalsHint = node?.isRoot ? goalsBlock({ goals, goalsCovered }) : ''
   const systemPrompt = [
     'You are the Transfer Probe Agent.',
     'Ask ONE question that applies the concept in a NEW context, not the one used to teach it.',
@@ -67,12 +72,16 @@ const evalSchema = z.object({
   appliedCorrectly: z.number().min(0).max(1),
   wordingConfusion: z.boolean(),
   exposesCausalWeakness: z.boolean(),
+  correctOutcomeButMissingWhy: z.boolean().optional().default(false),
   confidence: z.number().min(0).max(1),
   rationale: z.string(),
+  // 1-indexed goal numbers the student's answer clearly TRANSFERRED to the new context
+  // on THIS turn. Only used when the concept has required learning goals.
+  goalsAddressed: z.array(z.number().int()).optional().default([]),
 })
 
-export const evaluate = async ({ node, studentAnswer, goals = [] }) => {
-  const goalsHint = node?.isRoot ? goalsBlock({ goals }) : ''
+export const evaluate = async ({ node, studentAnswer, goals = [], goalsCovered = [] }) => {
+  const goalsHint = node?.isRoot ? goalsBlock({ goals, goalsCovered }) : ''
   const systemPrompt = [
     'You are the Transfer Evaluator. Observe ONE thing: how well the STUDENT\'S current answer',
     'shows the concept travelling to a new context.',
@@ -85,16 +94,31 @@ export const evaluate = async ({ node, studentAnswer, goals = [] }) => {
     '  scenario step by step in plain language ("we save the cheapest cost to each intersection,',
     '  so when another path reaches it, we just read the stored value") is successfully transferring.',
     '  Do NOT require formal notation or algebra.',
+    '- If the student gets the transferred OUTCOME right but gives little or no why/how, set',
+    '  appliedCorrectly high enough to reflect the correct outcome, set exposesCausalWeakness=true,',
+    '  set correctOutcomeButMissingWhy=true, and score confidence as partial (about 0.45–0.6),',
+    '  not as a total failure.',
     '- "confidence" is the overall QUALITY of the transfer attempt on this turn',
     '  (0 = none, 1 = correctly applied in the new context). NOT how sure you are of your judgement.',
+    '',
+    node?.isRoot && Array.isArray(goals) && goals.length > 0
+      ? [
+          'REQUIRED LEARNING GOALS — the user prompt lists numbered goals. For "goalsAddressed",',
+          'return the 1-indexed numbers of ONLY those goals whose substance the student CLEARLY',
+          'transferred to the new context on THIS turn. Be strict: vague or tangential references',
+          'do not count. If none are demonstrated, return [].',
+        ].join('\n')
+      : 'This concept has no explicit learning goals; return [] for "goalsAddressed".',
     '',
     'Return STRICT JSON:',
     '  preservedStructure: 0..1',
     '  appliedCorrectly: 0..1',
     '  wordingConfusion: boolean  // failure was mostly about phrasing, not understanding',
     '  exposesCausalWeakness: boolean  // failure clearly reveals a mechanism gap',
+    '  correctOutcomeButMissingWhy: boolean  // right outcome in new context, but why/how is thin',
     '  confidence: 0..1           // overall QUALITY of student transfer (see rules)',
     '  rationale: "..."',
+    '  goalsAddressed: [1,2,...]  // 1-indexed goal numbers successfully transferred on THIS turn; [] if none',
   ].join('\n')
   const userPrompt = [
     nodeContext(node),
@@ -106,8 +130,8 @@ export const evaluate = async ({ node, studentAnswer, goals = [] }) => {
 }
 
 // ── C. Transfer Remediation ───────────────────────────────────────
-export const remediate = async ({ node, evaluation, goals = [] }) => {
-  const goalsHint = node?.isRoot ? goalsBlock({ goals }) : ''
+export const remediate = async ({ node, evaluation, goals = [], goalsCovered = [] }) => {
+  const goalsHint = node?.isRoot ? goalsBlock({ goals, goalsCovered }) : ''
   const systemPrompt = [
     'You are the Transfer Remediation Agent.',
     'Offer ONE SIMPLER, MORE CONCRETE application case. "Concrete" = a specific scenario the',
@@ -131,16 +155,68 @@ export const remediate = async ({ node, evaluation, goals = [] }) => {
   return callText({ systemPrompt, userPrompt, temperature: 0.4, maxCompletionTokens: 200 })
 }
 
-// ── D. Transfer Phase Router ──────────────────────────────────────
-export const routePhase = ({ evaluation }) => {
-  const threshold = PASS_THRESHOLDS[PHASES.TRANSFER]
-  const { confidence, exposesCausalWeakness } = evaluation
+// ── C2. Transfer Guided Why Follow-up ─────────────────────────────
+// Used when the student mapped the outcome into the new context, but did not
+// yet explain why the same structure holds. Stay in transfer; do not reopen
+// causality unless the outcome itself is wrong.
+export const guide = async ({ node, evaluation, goals = [], goalsCovered = [] }) => {
+  const goalsHint = node?.isRoot ? goalsBlock({ goals, goalsCovered }) : ''
+  const systemPrompt = [
+    'You are the Transfer Guided Follow-up Agent.',
+    'The student appears to have the transferred outcome mostly right, but their answer did',
+    'not explain why/how the idea carries into the new context.',
+    '',
+    'Do NOT reopen the old causal phase. Stay on the SAME transfer scenario and ask for the',
+    'missing why in one focused follow-up.',
+    '',
+    'Shape:',
+    '1. Briefly acknowledge the correct outcome without overpraising.',
+    '2. Ask ONE why/how follow-up tied to the exact scenario in the last probe.',
+    '',
+    'Under 55 words. No new scenario. No full reteach. No formal math requirement unless the',
+    'goals are quantitative.',
+  ].join('\n')
+  const userPrompt = [
+    nodeContext(node),
+    goalsHint,
+    `Last transfer probe: ${node.phases.transfer.lastProbe || '(none)'}`,
+    `Evaluator rationale: ${evaluation.rationale}`,
+    `Applied correctly: ${evaluation.appliedCorrectly}`,
+    'Write the focused why/how follow-up now.',
+  ].filter(Boolean).join('\n\n')
+  return callText({ systemPrompt, userPrompt, temperature: 0.4, maxCompletionTokens: 140 })
+}
 
+// ── D. Transfer Phase Router ──────────────────────────────────────
+export const routePhase = ({ node, evaluation, goals = [], goalsCovered = [] }) => {
+  const threshold = PASS_THRESHOLDS[PHASES.TRANSFER]
+  const {
+    appliedCorrectly,
+    confidence,
+    correctOutcomeButMissingWhy,
+    exposesCausalWeakness,
+  } = evaluation
+  const outcomeRightButThin = correctOutcomeButMissingWhy || appliedCorrectly >= 0.65
+
+  if (exposesCausalWeakness && confidence < threshold && outcomeRightButThin) {
+    return { action: ACTIONS.GUIDE, phase: PHASES.TRANSFER, reason: 'missing_why' }
+  }
   if (exposesCausalWeakness && confidence < threshold) {
     return { action: ACTIONS.REOPEN, targetPhase: PHASES.CAUSALITY, phase: PHASES.TRANSFER }
   }
   if (confidence < threshold) {
     return { action: ACTIONS.REMEDIATE, phase: PHASES.TRANSFER }
   }
+
+  // Gate transfer advancement on goal coverage: every goal must be transferred
+  // to a new context at least once before we move on to recall.
+  const goalsGated = node?.isRoot && Array.isArray(goals) && goals.length > 0
+  if (goalsGated) {
+    const allCovered = goals.every((_, i) => goalsCovered[i] === true)
+    if (!allCovered) {
+      return { action: ACTIONS.CONTINUE, phase: PHASES.TRANSFER, reason: 'goals_not_covered' }
+    }
+  }
+
   return { action: ACTIONS.ADVANCE, phase: PHASES.TRANSFER }
 }

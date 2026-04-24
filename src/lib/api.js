@@ -126,6 +126,11 @@ export const returnFromActive = async ({ token, viaSkip = true }) => {
   return { snapshot: withLayout(result.snapshot), tutorMessage: result.tutorMessage }
 }
 
+export const restartTutorSession = async ({ token }) => {
+  const result = await callServer('/tutor/restart', { token })
+  return { snapshot: withLayout(result.snapshot), tutorMessage: result.tutorMessage }
+}
+
 export const transcribeAudio = async (blob) => {
   const formData = new FormData()
   formData.append('file', blob, 'recording.webm')

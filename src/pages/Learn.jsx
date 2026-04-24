@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   AlertCircle,
@@ -10,6 +10,8 @@ import {
   CornerUpLeft,
   HelpCircle,
   Loader,
+  LogOut,
+  RotateCcw,
   Send,
   SkipForward,
   Sparkles,
@@ -24,11 +26,12 @@ import DynamicConceptMap from '../components/learn/DynamicConceptMap'
 import PhasePanel from '../components/learn/PhasePanel'
 import ConceptStackBar from '../components/learn/ConceptStackBar'
 import MicButton from '../components/learn/MicButton'
-import Button from '../components/Button'
 import Logo from '../components/Logo'
+import { useAuth } from '../lib/auth'
 import {
   acceptOffer,
   fetchCatalog,
+  restartTutorSession,
   returnFromActive,
   skipOffer,
   startTutorSession,
@@ -36,12 +39,13 @@ import {
 } from '../lib/api'
 
 const Learn = () => {
-  const [selectionStep, setSelectionStep] = useState('name')
-  const [studentName, setStudentName] = useState('')
+  const { user, profile, signOut } = useAuth()
+  const navigate = useNavigate()
+  const studentName = (profile?.display_name || user?.email?.split('@')[0] || '').trim()
+  const [selectionStep, setSelectionStep] = useState('course')
   const [selection, setSelection] = useState({ courseId: '', homeworkId: '', conceptId: '' })
   const [catalog, setCatalog] = useState(null)
-  const [catalogLoading, setCatalogLoading] = useState(false)
-  const [nameError, setNameError] = useState('')
+  const [catalogLoading, setCatalogLoading] = useState(true)
 
   const [booting, setBooting] = useState(false)
   const [sessionToken, setSessionToken] = useState('')
@@ -72,6 +76,7 @@ const Learn = () => {
   const completed = !!state?.completed
   const conceptGoals = state?.conceptGoals || []
   const goalsCovered = state?.goalsCovered || []
+  const restartAvailable = !!state?.restartAvailable
 
   const visibleMessages = useMemo(() => {
     if (!activeNode) return []
@@ -84,20 +89,25 @@ const Learn = () => {
 
   useEffect(() => { setShowReason(false) }, [offer?.parentId, offer?.title])
 
-  const handleNameSubmit = async () => {
-    const trimmed = studentName.trim()
-    if (!trimmed) { setNameError('Please enter your name'); return }
-    setNameError('')
-    setCatalogLoading(true)
-    try {
-      const data = await fetchCatalog()
-      setCatalog(data)
-      setSelectionStep('course')
-    } catch (error) {
-      setPageError(error.message)
-    } finally {
-      setCatalogLoading(false)
-    }
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      setCatalogLoading(true)
+      try {
+        const data = await fetchCatalog()
+        if (!cancelled) setCatalog(data)
+      } catch (error) {
+        if (!cancelled) setPageError(error.message)
+      } finally {
+        if (!cancelled) setCatalogLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  const handleSignOut = async () => {
+    await signOut()
+    navigate('/', { replace: true })
   }
 
   const handleSelectCourse = (courseId) => {
@@ -114,7 +124,7 @@ const Learn = () => {
     setBooting(true)
     setPageError('')
     try {
-      const started = await startTutorSession({ conceptId, studentName: studentName.trim(), forceNew: true })
+      const started = await startTutorSession({ conceptId, studentName, forceNew: true })
       setSessionToken(started.sessionToken)
       setSnapshot(started.snapshot)
     } catch (error) {
@@ -182,6 +192,25 @@ const Learn = () => {
     }
   }
 
+  const handleRestart = async () => {
+    if (!sessionToken || loading) return
+    const confirmed = typeof window !== 'undefined'
+      ? window.confirm('Restart this homework from the beginning? Your progress will reset.')
+      : true
+    if (!confirmed) return
+    setLoading(true)
+    setPageError('')
+    try {
+      const result = await restartTutorSession({ token: sessionToken })
+      setSnapshot(result.snapshot)
+      setInput('')
+    } catch (error) {
+      setPageError(error.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const handleTranscript = (text) => {
     if (text) setInput((prev) => (prev ? `${prev} ${text}` : text))
   }
@@ -194,46 +223,30 @@ const Learn = () => {
       <div className="relative w-full h-screen overflow-hidden bg-forest-darker">
         <div className="h-full overflow-y-auto">
           <div className="mx-auto max-w-2xl px-5 pb-14 pt-8">
-            <div className="flex items-center gap-3 mb-10"><Logo variant="full" /></div>
+            <div className="flex items-center justify-between mb-10">
+              <Logo variant="full" />
+              <div className="flex items-center gap-3 text-xs text-forest-light-gray">
+                <span className="hidden sm:inline">{studentName || user?.email}</span>
+                <button
+                  onClick={handleSignOut}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-forest-border hover:text-white hover:border-forest-emerald/50 transition"
+                >
+                  <LogOut size={12} /> Sign out
+                </button>
+              </div>
+            </div>
 
-            {selectionStep === 'name' && (
-              <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}>
-                <div className="rounded-xl border border-forest-border bg-forest-card/40 p-6">
-                  <p className="text-[10px] uppercase tracking-[0.25em] text-forest-emerald font-semibold">Welcome</p>
-                  <h1 className="mt-3 text-2xl font-semibold text-white">Let's get started</h1>
-                  <p className="mt-2 text-sm text-forest-light-gray leading-relaxed">
-                    Enter your name to begin. You'll pick a course, a homework, and a concept to study.
-                  </p>
-                  <div className="mt-6">
-                    <label htmlFor="student-name" className="block text-sm font-medium text-white mb-1.5">Your name</label>
-                    <input
-                      id="student-name"
-                      type="text"
-                      value={studentName}
-                      onChange={(e) => { setStudentName(e.target.value); if (nameError) setNameError('') }}
-                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void handleNameSubmit() } }}
-                      placeholder="Jane Doe"
-                      className={`w-full rounded-xl border ${nameError ? 'border-red-500/70' : 'border-forest-border'} bg-forest-darker/60 px-4 py-3 text-sm text-white outline-none transition focus:border-forest-emerald placeholder:text-forest-gray`}
-                    />
-                    {nameError && <p className="mt-1 text-xs text-red-400">{nameError}</p>}
-                  </div>
-                  <div className="mt-6">
-                    <Button onClick={handleNameSubmit} fullWidth disabled={catalogLoading}>
-                      <span className="flex items-center justify-center gap-2">
-                        {catalogLoading ? <Loader size={16} className="animate-spin" /> : <ArrowRight size={16} />}
-                        Continue
-                      </span>
-                    </Button>
-                  </div>
-                </div>
-              </motion.div>
+            {catalogLoading && !catalog && (
+              <div className="flex items-center gap-2 text-forest-light-gray text-sm">
+                <Loader size={14} className="animate-spin" /> Loading courses...
+              </div>
             )}
 
-            {selectionStep === 'course' && (
+            {selectionStep === 'course' && catalog && (
               <PickerList
                 eyebrow="Step 1 of 3"
                 title="Pick a course"
-                subtitle={`Hi, ${studentName.trim()} — which course are you studying?`}
+                subtitle={`Hi, ${studentName} — which course are you studying?`}
                 items={(catalog?.courses || []).map((c) => ({
                   id: c.id,
                   title: c.title,
@@ -373,6 +386,29 @@ const Learn = () => {
                 )
               })}
 
+              {restartAvailable && !completed && !loading && (
+                <motion.div
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 flex items-start gap-3"
+                >
+                  <RotateCcw size={16} className="mt-0.5 shrink-0 text-amber-400" />
+                  <div className="flex-1">
+                    <p className="text-sm text-white">Want to go through this concept from the start?</p>
+                    <p className="mt-0.5 text-xs text-forest-light-gray">
+                      You can keep answering the recall question, or restart the homework to revisit the whole teaching flow.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleRestart}
+                      className="mt-2 px-3 py-1.5 bg-amber-500/15 border border-amber-500/40 text-amber-200 rounded-lg text-xs font-medium hover:bg-amber-500/25 transition flex items-center gap-1.5"
+                    >
+                      <RotateCcw size={12} /> Restart homework
+                    </button>
+                  </div>
+                </motion.div>
+              )}
+
               {offer && !loading && (
                 <motion.div
                   initial={{ opacity: 0, y: 8 }}
@@ -476,6 +512,16 @@ const Learn = () => {
                       className="px-3 py-2 rounded-xl text-xs border border-forest-border bg-forest-card text-forest-light-gray hover:text-forest-emerald hover:border-forest-emerald/50 transition-colors disabled:opacity-50 flex items-center gap-1.5"
                     >
                       <CornerUpLeft size={13} /> Return
+                    </button>
+                  )}
+                  {restartAvailable && !canReturn && (
+                    <button
+                      type="button"
+                      onClick={handleRestart}
+                      disabled={loading}
+                      className="px-3 py-2 rounded-xl text-xs border border-amber-500/40 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20 transition-colors disabled:opacity-50 flex items-center gap-1.5"
+                    >
+                      <RotateCcw size={13} /> Restart
                     </button>
                   )}
                   <button

@@ -122,28 +122,35 @@ export const probe = async ({ node, mode = 'initial', goals = [], goalsCovered =
 export const introduce = async ({ node, triggerText = '', parentTitle = '' } = {}) => {
   const systemPrompt = [
     'You are the Subtopic Intro Agent. The student has just accepted a detour into a small',
-    'prerequisite concept because they were confused about it. Your job is to TEACH it briefly,',
-    'not to quiz them.',
+    'prerequisite concept because they were confused about it. Your job is to TEACH it',
+    'thoroughly, not to quiz them. The student asked because they genuinely do not know — give',
+    'them a real explanation, not a one-liner followed by a question.',
     '',
-    'Open the new chat with a short, concrete explanation so the student has something to hold',
-    'on to. Then ask ONE gentle check-in — NOT a hard probe.',
+    'Lead with substantive teaching. Build understanding before any check-in. Most of the response',
+    'should be explanation; only a small tail is the check-in, and the check-in is OPTIONAL,',
+    'low-pressure, and never re-asks the same question they were just stuck on.',
     '',
-    'Format (keep it tight):',
-    '1. One sentence that names the concept in plain words and ties it back to why it matters',
-    '   in the parent topic. Use wording native to THIS concept.',
-    '2. 1-2 short lines of concrete teaching: a specific example, a named part, or a tiny',
-    '   comparison drawn from this concept. Use markdown bullets or short sentences.',
-    '   Use numbers only if the topic is quantitative. NEVER write a wall of text.',
-    '3. ONE friendly check-in — e.g., "Make sense so far?" or "In one line, what would you say',
-    '   this is?" Low-pressure. Do NOT add meta-reassurances about answer length',
+    'Format:',
+    '1. Plain-language definition in 1-2 sentences that name the concept and tie it back to why',
+    '   it matters in the parent topic. Use wording native to THIS concept.',
+    '2. A concrete worked example or walk-through (3-6 short lines). Show it happening with',
+    '   specific named parts, steps, or cases drawn from this concept. Bullets, a tiny mini-trace,',
+    '   or a short code block are all fine. Use numbers only if the topic is quantitative.',
+    '3. A short clarification of the IDEA behind it — what it does, what it is NOT, or how it',
+    '   contrasts with a nearby concept. 1-2 sentences. This is the part that turns the example',
+    '   into understanding.',
+    '4. ONE light, optional check-in at the end — e.g., "Want me to walk through another case?"',
+    '   or "Anything in here feel fuzzy?" Do NOT immediately re-ask the question that triggered',
+    '   the detour. Do NOT add meta-reassurances about answer length',
     '   (no "a word or two is fine", "just a word is fine", etc.).',
     '',
     'Rules:',
-    '- Do NOT ask a probing/testing question as your opener.',
+    '- Do NOT open with a probing/testing question.',
     '- Do NOT restate the parent concept; focus on THIS subtopic.',
     '- Do NOT import examples from unrelated domains; derive them from this subtopic.',
-    '- Under 80 words total.',
-    '- Warm, specific, concrete.',
+    '- Aim for 120-180 words. Substantive teaching first; a wall-of-text is fine if it is',
+    '  actually teaching. A two-line answer is NOT fine here — the student needs the explanation.',
+    '- Warm, specific, concrete. Treat them as wanting to learn, not as needing to be tested.',
   ].join('\n')
   const userPrompt = [
     nodeContext(node),
@@ -151,7 +158,7 @@ export const introduce = async ({ node, triggerText = '', parentTitle = '' } = {
     triggerText ? `What the student was asked/said just before branching:\n${triggerText}` : '',
     'Write the teach + gentle check-in now.',
   ].filter(Boolean).join('\n\n')
-  return callText({ systemPrompt, userPrompt, temperature: 0.5, maxCompletionTokens: 220 })
+  return callText({ systemPrompt, userPrompt, temperature: 0.5, maxCompletionTokens: 420 })
 }
 
 // ── B. Explanation Evaluator ─────────────────────────────────────
@@ -252,28 +259,38 @@ export const remediate = async ({ node, evaluation, goals = [], goalsCovered = [
     stuck
       ? [
           'The student has tried multiple times and is stuck. Abstractions and analogies are not',
-          'landing. Escalate: SHOW a small concrete worked example DRAWN FROM THIS CONCEPT, then',
-          'ask them to describe what they saw. STAY INSIDE THE GOAL SCOPE — do not introduce',
-          'numbers, concentrations, or calculations unless the goals explicitly call for',
-          'quantitative reasoning.',
+          'landing. Escalate: TEACH thoroughly — show a concrete worked example DRAWN FROM THIS',
+          'CONCEPT and explain what is happening. Then ask them to describe what they saw. STAY',
+          'INSIDE THE GOAL SCOPE — do not introduce numbers, concentrations, or calculations',
+          'unless the goals explicitly call for quantitative reasoning.',
           '',
           'Template:',
-          '1) ONE short setup sentence naming a SPECIFIC scenario drawn from THIS concept',
-          '   (a specific object, part, step, or case — not an import from another domain).',
-          '2) Walk through the actual steps or parts in 2-4 short lines. Use specific specifics.',
-          '   Numbers ONLY if the goal is quantitative.',
-          '3) End with ONE question that asks the student to say, in their own words, WHAT they',
+          '1) ONE setup sentence naming a SPECIFIC scenario drawn from THIS concept (a specific',
+          '   object, part, step, or case — not an import from another domain).',
+          '2) Walk through the actual steps or parts in 4-6 short lines. Use specific specifics.',
+          '   Spell out what is happening at each step. Numbers ONLY if the goal is quantitative.',
+          '3) Add 1-2 sentences naming what the student should TAKE AWAY — what made the example',
+          '   work, what the underlying idea is, or what is easy to miss.',
+          '4) End with ONE question that asks the student to say, in their own words, WHAT they',
           '   just saw happen — not to define the concept abstractly.',
           '',
-          'Total length: under 100 words. Concrete beats clever.',
+          'Aim for 130-180 words. Concrete and substantive beats clever and short.',
         ].join('\n')
       : [
-          'DEFAULT TO A CONCRETE MICRO-EXAMPLE DRAWN FROM THIS CONCEPT, not an abstract analogy',
-          'and not an example imported from another topic. Concrete = a specific object, part,',
-          'step, or case — NOT automatically numbers. Use numbers ONLY if a goal explicitly',
-          'requires quantitative reasoning. Then ask ONE follow-up in words.',
-          'Keep it tight: 3-4 sentences total. Never restart the whole topic. Never dump theory.',
-          'Only use a pure plain-language reframe if the concept truly cannot be instanced.',
+          'TEACH with a concrete micro-example DRAWN FROM THIS CONCEPT, not an abstract analogy',
+          'and not an example imported from another topic. The student needs to learn the idea —',
+          'give them enough to actually understand it.',
+          '',
+          'Structure:',
+          '1) Name a specific scenario from this concept (an object, part, step, or case).',
+          '2) Walk through it in 3-5 short lines. Show what happens, with specifics.',
+          '3) 1-2 sentences naming what to take away from the example — the idea behind it.',
+          '4) ONE follow-up question in words.',
+          '',
+          'Aim for 100-150 words. Concrete = a specific object, part, step, or case — NOT',
+          'automatically numbers. Use numbers ONLY if a goal explicitly requires quantitative',
+          'reasoning. Never restart the whole topic. Never dump theory. Only use a pure',
+          'plain-language reframe if the concept truly cannot be instanced.',
         ].join('\n'),
   ].join('\n')
   const userPrompt = [
@@ -284,7 +301,7 @@ export const remediate = async ({ node, evaluation, goals = [], goalsCovered = [
     `Signals — plainLanguage=${evaluation.plainLanguage}, capturedConcept=${evaluation.capturedConcept}, circular=${evaluation.circular}, parroting=${evaluation.parroting}`,
     'Write the remediation + follow-up question now.',
   ].filter(Boolean).join('\n\n')
-  return callText({ systemPrompt, userPrompt, temperature: 0.4, maxCompletionTokens: 180 })
+  return callText({ systemPrompt, userPrompt, temperature: 0.4, maxCompletionTokens: 360 })
 }
 
 // ── C2. Guided Teaching ──────────────────────────────────────────
@@ -298,20 +315,24 @@ export const guide = async ({ node, evaluation, goals = [], goalsCovered = [] })
   const goalsGated = node?.isRoot && Array.isArray(goals) && goals.length > 0
   const systemPrompt = [
     'You are the Guided Teaching Agent. The student is not yet confident on this concept.',
-    'Your job is to TEACH FORWARD, not to re-ask a definition question.',
+    'Your job is to TEACH FORWARD, not to re-ask a definition question. Substantive teaching',
+    'first; the prediction question is a small tail at the end, not the bulk of the response.',
     '',
     'Approach:',
-    '1. Pick a tiny, concrete scenario DRAWN FROM THIS CONCEPT — a specific object, part, or',
-    '   step native to the topic. Use numbers ONLY if a goal explicitly requires quantitative',
-    '   reasoning; otherwise use a qualitative specific. Prefer the smallest possible example.',
-    '2. WALK ONE STEP of it for the student — do the first move yourself, out loud, so they',
-    '   see the reasoning pattern. Use bullets or a 2-3 line mini-trace.',
-    '3. Hand them the NEXT step as a prediction question. Not "what is X?" but "what happens next?"',
-    '   or "given this, what does step 2 produce?" They should be predicting behavior, not defining terms.',
+    '1. Pick a concrete scenario DRAWN FROM THIS CONCEPT — a specific object, part, or step',
+    '   native to the topic. Use numbers ONLY if a goal explicitly requires quantitative',
+    '   reasoning; otherwise use a qualitative specific. Prefer a small example, but do not',
+    '   shrink so far that there is nothing to teach.',
+    '2. WALK THROUGH the first step or two yourself — do the moves out loud, so the student',
+    '   sees the reasoning pattern. Use bullets or a 3-5 line mini-trace.',
+    '3. Add 1-2 sentences naming the IDEA the student should take away from this — what makes',
+    '   the step work, or what is easy to miss. This is what turns the trace into understanding.',
+    '4. Hand them the NEXT step as a prediction question. Not "what is X?" but "what happens',
+    '   next?" or "given this, what does step 2 produce?" They predict behavior, not define terms.',
     '',
     'Style:',
     '- Be warm and specific. Don\'t apologize, don\'t recap, don\'t announce what you\'re about to do.',
-    '- Under 90 words total.',
+    '- Aim for 110-160 words total. Substantive teaching, not a one-liner.',
     '- Markdown bullets or a tiny code block if it helps.',
     '- NO abstract restatement of the concept. NO "in your own words" question.',
     '- STAY INSIDE THE GOAL SCOPE. Do not introduce aspects (numbers, concentrations, rates) the',
@@ -319,10 +340,11 @@ export const guide = async ({ node, evaluation, goals = [], goalsCovered = [] })
     '- Do NOT import examples from unrelated domains; derive the scenario from this concept.',
     '',
     attempts >= 2
-      ? 'The student has tried multiple times. Go EVEN SMALLER and MORE concrete. Shrink the'
-        + ' example — fewer parts, fewer moves, fewer pieces. Friction → simplify, don\'t add'
-        + ' more words or new dimensions.'
-      : 'This is early in the struggle. A compact guided step is enough — don\'t over-explain.',
+      ? 'The student has tried multiple times. Shrink the SCENARIO to its smallest meaningful'
+        + ' form — fewer parts, fewer moves — but keep the EXPLANATION thorough. Friction means'
+        + ' they need MORE teaching on a smaller example, not less teaching overall.'
+      : 'Early in the struggle. Teach the idea clearly with one walk-through; you do not need to'
+        + ' over-explain edge cases.',
   ].join('\n')
   const userPrompt = [
     nodeContext(node),
@@ -332,7 +354,7 @@ export const guide = async ({ node, evaluation, goals = [], goalsCovered = [] })
     `Signals — confidence=${evaluation?.confidence ?? 'n/a'}, direction=${evaluation?.direction || 'same'}`,
     'Write the guided step + prediction question now.',
   ].filter(Boolean).join('\n\n')
-  return callText({ systemPrompt, userPrompt, temperature: 0.5, maxCompletionTokens: 220 })
+  return callText({ systemPrompt, userPrompt, temperature: 0.5, maxCompletionTokens: 380 })
 }
 
 // ── D. Micro-causal Check ─────────────────────────────────────────
@@ -344,12 +366,17 @@ const microSchema = z.object({
   suggestedFollowUp: z.string().nullable().optional(),
 })
 
-export const microCausalCheck = async ({ node, studentAnswer }) => {
+export const microCausalCheck = async ({ node, studentAnswer, lastProbe = '' }) => {
   const systemPrompt = [
     'You are the Micro-causal Check Agent for the Explanation phase.',
     'The student produced a reasonable-sounding explanation. Your job is a NARROW sanity check:',
     'only flag it if the explanation looks like parroting, magical-sounding words they probably',
     'don\'t understand, or a clear logical error dressed up in fluent language.',
+    '',
+    'Judge the answer RELATIVE TO THE LAST PROBE. If the probe was a concrete, closed, or',
+    'scenario-specific question, a very short direct answer can be fully valid. Do NOT flag an',
+    'answer merely because it omits nouns that were already supplied by the probe. Examples:',
+    '"both", "it stays saved", or "the SSD" can still hold if they directly answer the probe.',
     '',
     'Default stance: stillHolds = TRUE. Short correct answers are fine. Incomplete-but-correct is',
     'fine. Missing nuance is fine (nuance is for the causality phase). Only return stillHolds=false',
@@ -360,6 +387,7 @@ export const microCausalCheck = async ({ node, studentAnswer }) => {
   ].join('\n')
   const userPrompt = [
     nodeContext(node),
+    `Last probe: ${lastProbe || node?.phases?.explanation?.lastProbe || '(none)'}`,
     `Answer under review: ${studentAnswer}`,
     'Return JSON only.',
   ].join('\n\n')

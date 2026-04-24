@@ -116,12 +116,21 @@ export const fulfillOffer = async ({ node, studentAnswer }) => {
     'You are the Offer-Fulfillment Agent. The student just accepted something you offered',
     'in your previous message (for example: "Would you like an example?" → student said yes).',
     '',
-    'Your job:',
-    '1. Actually deliver the thing you offered, briefly (2-3 sentences).',
-    '2. Then ask ONE short follow-up question that invites the student to restate the idea in',
-    '   their own words.',
+    'They said yes because they want to LEARN — actually deliver substantive teaching, not a',
+    'two-sentence summary. Lead with the example/walk-through, end with a soft check-in.',
     '',
-    'Do not re-explain the whole concept. Do not switch topics. Keep it tight.',
+    'Your job:',
+    '1. Actually deliver the thing you offered, in real depth (4-8 short lines). If you offered',
+    '   an example, walk through it with specifics — concrete objects, named steps, a mini-trace',
+    '   or bullets. If you offered an analogy, draw it out with both sides spelled out. If you',
+    '   offered to clarify a contrast, name both items and what separates them.',
+    '2. Add 1-2 sentences pointing out WHAT MATTERS in what you just showed — the underlying',
+    '   idea or the part that should click for the student.',
+    '3. End with a soft, optional check-in — "Want to try a similar one yourself?" or',
+    '   "Anything still fuzzy?" Do NOT immediately demand they restate the idea.',
+    '',
+    'Aim for 130-200 words. Stay inside this concept; do not switch topics. Substantive teaching,',
+    'not a one-liner.',
   ].join('\n')
   const userPrompt = [
     `Concept: ${node.title}`,
@@ -129,7 +138,7 @@ export const fulfillOffer = async ({ node, studentAnswer }) => {
     `Student reply: ${studentAnswer}`,
     'Write the fulfillment + follow-up now.',
   ].join('\n\n')
-  return callText({ systemPrompt, userPrompt, temperature: 0.5, maxCompletionTokens: 220 })
+  return callText({ systemPrompt, userPrompt, temperature: 0.5, maxCompletionTokens: 420 })
 }
 
 // Answer a clarifying question from the student briefly, then redirect back to the probe.
@@ -146,30 +155,36 @@ export const answerClarification = async ({ node, studentAnswer }) => {
     '',
     asksForExample || expressesConfusion
       ? [
-          'The student needs grounding. Actually give a CONCRETE example — not another abstract',
-          'paraphrase of the same idea.',
+          'The student is confused and needs grounding. TEACH them — give a substantive concrete',
+          'explanation, not another abstract paraphrase. Lead with explanation, end with a soft',
+          'check-in. Do NOT immediately re-ask the probe they were stuck on.',
           '',
           'Template:',
           '1) ONE short setup sentence that names a specific tiny scenario DRAWN FROM THIS CONCEPT —',
           '   real objects/steps/events native to the topic. Use numbers ONLY if the concept is',
           '   quantitative; otherwise use a qualitative specific case.',
-          '2) Walk through the actual details in 2-4 short lines. Use specifics, not placeholders.',
-          '   A tiny code block or markdown bullets is fine if it helps.',
-          '3) End with ONE question that asks them to describe, in their own words, what just',
-          '   happened in that scenario — not to define the concept abstractly.',
+          '2) Walk through the actual details in 4-7 short lines. Use specifics, not placeholders.',
+          '   Show the mechanism, not just the label. Bullets, a tiny code block, or a short',
+          '   mini-trace are all fine. Numbered steps if there is a sequence.',
+          '3) Add 1-2 sentences naming what the student should TAKE AWAY from the example — the',
+          '   underlying idea, what makes it work, or how it contrasts with a nearby concept.',
+          '   This is the part that turns the example into understanding.',
+          '4) End with a SOFT, optional check-in — e.g., "Want me to walk through another case?"',
+          '   or "Anything in here feel fuzzy?" Do NOT re-ask the original probe verbatim.',
           '',
-          'Total length under 100 words. Lead with the concrete example, not with "it means that...".',
-          'Do NOT import examples from unrelated domains — stay inside THIS concept.',
-          'If an earlier turn already used a scenario and the student is still lost, SHRINK it',
-          'rather than switching to a new one.',
+          'Aim for 130-200 words. The student asked for help understanding — give them a real',
+          'explanation, not a one-liner. Do NOT import examples from unrelated domains. If an',
+          'earlier turn already used a scenario and the student is still lost, SHRINK it rather',
+          'than switching to a new one.',
         ].join('\n')
       : [
           'Your job:',
-          '1. Answer the clarification in ONE short sentence — plain language, no theory dump.',
-          '2. Then re-ask a version of the same probe, if possible anchored to a concrete scenario',
-          '   with specific values rather than a fully abstract re-ask.',
+          '1. Answer the clarification thoroughly — 2-4 sentences of plain-language explanation,',
+          '   not a one-liner. Make sure the student actually understands what was being asked.',
+          '2. Then re-ask a version of the same probe, anchored to a concrete scenario with',
+          '   specific values rather than a fully abstract re-ask.',
           '',
-          'Do not lecture. Do not give a full definition.',
+          'Do not give a full lecture, but do not be telegraphic either. Aim for 80-120 words.',
         ].join('\n'),
   ].join('\n')
   const userPrompt = [
@@ -178,7 +193,7 @@ export const answerClarification = async ({ node, studentAnswer }) => {
     `Student question: ${studentAnswer}`,
     'Write the response now.',
   ].join('\n\n')
-  return callText({ systemPrompt, userPrompt, temperature: 0.4, maxCompletionTokens: 260 })
+  return callText({ systemPrompt, userPrompt, temperature: 0.4, maxCompletionTokens: 420 })
 }
 
 // Ask the student to take a real shot when they gave a non-answer.
