@@ -7,7 +7,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
 COPY server ./server
-COPY src/lib/core ./src/lib/core
+COPY src/lib/tutor ./src/lib/tutor
 
 EXPOSE 4001
 
