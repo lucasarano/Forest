@@ -83,25 +83,6 @@ const Login = () => {
     }
   }
 
-  const handleGoogle = async () => {
-    if (busy) return
-    setError(''); setInfo('')
-    setBusy(true)
-    try {
-      setPendingRole(role)
-      const redirectUrl = new URL('/auth/callback', window.location.origin)
-      if (redirectTo) redirectUrl.searchParams.set('redirect', redirectTo)
-      const { error: oauthError } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: { redirectTo: redirectUrl.toString() },
-      })
-      if (oauthError) throw oauthError
-    } catch (err) {
-      setError(err.message || 'Google sign-in failed.')
-      setBusy(false)
-    }
-  }
-
   return (
     <div className="min-h-screen bg-forest-darker flex items-center justify-center p-4">
       <motion.div
@@ -146,27 +127,6 @@ const Login = () => {
               </div>
             </div>
           )}
-
-          <button
-            type="button"
-            onClick={handleGoogle}
-            disabled={busy}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-white text-gray-900 font-medium text-sm hover:bg-gray-100 transition disabled:opacity-60 mb-4"
-          >
-            <GoogleMark />
-            Continue with Google
-          </button>
-
-          <div className="relative my-4">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-forest-border" />
-            </div>
-            <div className="relative flex justify-center">
-              <span className="bg-forest-card/40 px-3 text-[11px] uppercase tracking-[0.2em] text-forest-gray">
-                or with email
-              </span>
-            </div>
-          </div>
 
           <form onSubmit={handleEmailAuth} className="space-y-3">
             {mode === 'signup' && (
@@ -276,15 +236,6 @@ const RoleButton = ({ active, onClick, icon, label }) => (
     {icon}
     {label}
   </button>
-)
-
-const GoogleMark = () => (
-  <svg width="16" height="16" viewBox="0 0 48 48" aria-hidden="true">
-    <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.2 29.2 35 24 35c-6.1 0-11-4.9-11-11s4.9-11 11-11c2.8 0 5.3 1 7.3 2.7l5.7-5.7C33.6 6.6 29.1 5 24 5 13.5 5 5 13.5 5 24s8.5 19 19 19 19-8.5 19-19c0-1.2-.1-2.3-.4-3.5z"/>
-    <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 16 18.9 13 24 13c2.8 0 5.3 1 7.3 2.7l5.7-5.7C33.6 6.6 29.1 5 24 5 16.3 5 9.6 9.3 6.3 14.7z"/>
-    <path fill="#4CAF50" d="M24 43c5 0 9.5-1.9 12.9-5l-6-4.9C29 34.6 26.6 35.5 24 35.5c-5.2 0-9.6-2.7-11.3-6.9l-6.5 5C9.5 38.6 16.2 43 24 43z"/>
-    <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.4 4.2-4.4 5.5l6 4.9C40.6 35.6 43 30.2 43 24c0-1.2-.1-2.3-.4-3.5z"/>
-  </svg>
 )
 
 export default Login
