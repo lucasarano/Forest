@@ -26,7 +26,7 @@ import {
   getSessionDetail,
   getAllEventsForSessions,
 } from './db.js'
-import { buildAnalytics, buildSessionDetail } from './teacherAnalytics.js'
+import { buildAnalytics, buildSessionDetail, sessionEvalScore } from './teacherAnalytics.js'
 import {
   initializeState,
   generateOpeningTurn,
@@ -199,11 +199,58 @@ const handler = async (request, response) => {
     }
   }
 
-  // Admin: sessions summary
+  // Admin: ops dashboard aggregate (sessions + event rollups).
   if (request.method === 'GET' && url.pathname === '/api/ops/sessions') {
     requireAdmin(url.searchParams.get('password') || '')
     const sessions = await listTutorSessionsSummary()
-    return sendJson(response, 200, { sessions }, origin)
+    const ids = sessions.map((s) => s.id)
+    const events = ids.length ? await getAllEventsForSessions(ids) : []
+
+    const totalSessions = sessions.length
+    const completedSessions = sessions.filter((s) => s.status === 'completed' || s.state?.completed === true)
+    const completedCount = completedSessions.length
+    const completionRate = totalSessions ? Math.round((completedCount / totalSessions) * 100) : 0
+
+    // UI hardcodes legacy phase keys [self_report, learning, evaluation, survey, summary].
+    // Current model only has active/completed, so map completed→summary, active→learning.
+    const sessionsByPhase = { self_report: 0, learning: 0, evaluation: 0, survey: 0, summary: 0 }
+    for (const s of sessions) {
+      if (s.status === 'completed' || s.state?.completed === true) sessionsByPhase.summary += 1
+      else sessionsByPhase.learning += 1
+    }
+
+    const eventsByType = {}
+    for (const ev of events) eventsByType[ev.event_type] = (eventsByType[ev.event_type] || 0) + 1
+    const totalEvents = events.length
+    const avgEventsPerSession = totalSessions ? Math.round((totalEvents / totalSessions) * 10) / 10 : 0
+
+    const eventsBySession = new Map()
+    for (const ev of events) {
+      const list = eventsBySession.get(ev.session_id) || []
+      list.push(ev)
+      eventsBySession.set(ev.session_id, list)
+    }
+    const sessionsWithNoEvents = sessions.filter((s) => !(eventsBySession.get(s.id)?.length)).length
+    const sessionsWithNoEvalScore = completedSessions.filter((s) => sessionEvalScore(s.state || {}) == null).length
+
+    const recentEvents = [...events]
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+      .slice(0, 20)
+      .map((e) => ({ type: e.event_type, at: e.created_at }))
+
+    return sendJson(response, 200, {
+      totalSessions,
+      completedCount,
+      completionRate,
+      totalEvents,
+      avgEventsPerSession,
+      sessionsByPhase,
+      eventsByType,
+      recentEvents,
+      sessionsWithNoEvents,
+      sessionsWithNoEvalScore,
+      sessions,
+    }, origin)
   }
 
   // Teacher analytics

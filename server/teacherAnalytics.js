@@ -35,7 +35,7 @@ const sessionMasteryRate = (state) => {
 // Eval score: average phase confidence across all engaged phases, scaled to 0–100.
 // A phase is "engaged" if the student has attempted it (attempts > 0) inside a
 // non-skipped node. Returns null when no phase has any evidence yet.
-const sessionEvalScore = (state) => {
+export const sessionEvalScore = (state) => {
   const nodes = Object.values(safeNodes(state))
   let sum = 0
   let count = 0

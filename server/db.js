@@ -331,7 +331,7 @@ export const insertTutorEvent = async ({ sessionId, eventType, payload = {} }) =
 export const listTutorSessionsSummary = async () => {
   const { data, error } = await getSupabase()
     .from('tutor_sessions')
-    .select('id, concept_id, student_name, status, turn_index, created_at, updated_at')
+    .select('id, concept_id, student_name, status, turn_index, state, created_at, updated_at')
     .order('created_at', { ascending: false })
     .limit(200)
   if (error) throw error
