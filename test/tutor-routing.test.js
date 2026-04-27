@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import { ACTIONS, PHASES } from '../src/lib/tutor/constants.js'
 import { routePhase as routeTransfer } from '../src/lib/tutor/phases/transfer.js'
+import { routePhase as routeCausality } from '../src/lib/tutor/phases/causality.js'
 import { createInitialState, getActiveNode, markGoalsCovered, pushSubtopic } from '../src/lib/tutor/state.js'
 
 test('transfer router asks an in-place why follow-up when outcome is right but mechanism is thin', () => {
@@ -80,6 +81,33 @@ test('transfer router advances on uncovered goals once attempts pile up and this
 
   assert.equal(decision.action, ACTIONS.ADVANCE)
   assert.equal(decision.reason, 'attempts_with_passing_confidence')
+})
+
+test('causality router advances when recent turns show consistent passing confidence', () => {
+  const decision = routeCausality({
+    node: { isRoot: true },
+    evaluation: {
+      confidence: 0.85,
+      magicalLanguage: false,
+      explanationFoundationWeak: false,
+      localOrPrerequisite: 'local',
+      suspectedPrerequisiteGap: null,
+    },
+    phaseRecord: {
+      attempts: 3,
+      confidence: 0.5,
+      evidence: [
+        { raw: { confidence: 0.4 } },
+        { raw: { confidence: 0.78 } },
+        { raw: { confidence: 0.85 } },
+      ],
+    },
+    goals: ['goal-a', 'goal-b', 'goal-c'],
+    goalsCovered: [true, true, false],
+  })
+
+  assert.equal(decision.action, ACTIONS.ADVANCE)
+  assert.equal(decision.reason, 'consistent_passing')
 })
 
 test('flat goalsCovered reflects the union of all phase coverage arrays', () => {

@@ -49,12 +49,25 @@ export const probe = async ({ node, mode = 'initial', goals = [], goalsCovered =
     'the goals do not mention. Do NOT import examples from unrelated domains; derive the',
     'scenario from THIS concept.',
     '',
+    'CRITICAL — VARY THE QUESTION SHAPE EACH TURN. Look at the recent turns in the user prompt.',
+    'If a previous tutor probe asked "what happens to X if we break/remove/change Y", DO NOT ask',
+    'the same shape again with a different Y in the same chain. Specifically:',
+    '- If you have already drilled the chlorophyll → light reactions → Calvin cycle → glucose',
+    '  chain by breaking a different link, switch to a DIFFERENT goal angle entirely (e.g.,',
+    '  reverse the direction: "what would have to be true upstream for X to happen?", or ask',
+    '  about an uncovered goal you have not yet probed).',
+    '- If the student has already given a clear correct answer naming the chain, do NOT re-ask',
+    '  the same chain with a fresh scenario. Pick a different mechanism dimension or move on.',
+    'Treat repetition as a failure mode, not as reinforcement.',
+    '',
     'Preferred shape: one sentence of concrete setup, then a why / what-if question.',
-    'Forms you can use (pick the one that fits this concept best):',
+    'Forms you can use (pick the one that fits this concept best AND that you have not just used):',
     '- State a specific situation in the concept, then ask why the next step happens.',
     '- Propose a small intervention ("if we change X in this specific case...") and ask what',
     '  follows and why.',
     '- Propose removing or breaking one element and ask what effect that has and why.',
+    '- Reverse the question: given an observed effect, ask what cause is required upstream.',
+    '- Compare two cases that differ in one mechanism step and ask why the outcomes diverge.',
     '',
     'Avoid purely abstract "why does this happen?" with no scenario. The student should be',
     'reasoning about something specific they can picture.',
@@ -116,10 +129,17 @@ export const evaluate = async ({ node, studentAnswer, goals = [], goalsCovered =
     node?.isRoot && Array.isArray(goals) && goals.length > 0
       ? [
           'REQUIRED LEARNING GOALS — the user prompt lists numbered goals. For "goalsAddressed",',
-          'return the 1-indexed numbers of ONLY those goals whose CAUSAL MECHANISM (why/how) the',
-          'student CLEARLY demonstrated on THIS turn. Be strict: vague or tangential references do',
-          'not count. If none are demonstrated, return []. Already-covered goals may still be',
-          'included if the student re-demonstrated them; dedup happens upstream.',
+          'return the 1-indexed numbers of goals whose CAUSAL MECHANISM the student articulated on',
+          'THIS turn. Be REASONABLE, not nitpicky:',
+          '- If the student named the relevant cause AND its effect for a goal, even briefly,',
+          '  CREDIT IT. E.g., "less chlorophyll means less light absorbed, so fewer carriers, so',
+          '  Calvin cycle slows" credits goals about chlorophyll role AND about light reactions',
+          '  driving the Calvin cycle.',
+          '- A clear correct answer that bundles two goals into one chain credits BOTH goals.',
+          '- Do not require formal terminology. Plain-language causal chains count.',
+          '- Only withhold credit when the answer is empty, off-topic, or genuinely vague (no',
+          '  cause-and-effect named).',
+          'If none are clearly demonstrated, return [].',
         ].join('\n')
       : 'This concept has no explicit learning goals; return [] for "goalsAddressed".',
     '',
@@ -307,9 +327,26 @@ export const routePhase = ({ node, evaluation, phaseRecord, goals = [], goalsCov
   if (goalsGated) {
     const allCovered = goals.every((_, i) => goalsCovered[i] === true)
     if (!allCovered) {
-      // Safety valve: after enough attempts with passing mean confidence,
-      // advance instead of looping on uncovered goals. Recall retests each.
-      if (phaseRecord.attempts >= 4 && phaseRecord.confidence >= threshold) {
+      // Loop-break: the evaluator's goalsAddressed credit is strict by design,
+      // so a student can keep giving correct mechanism answers without ever
+      // accumulating credit for every goal. If the recent turns show
+      // consistent passing confidence, the student is demonstrating mechanism
+      // ability — drilling further on the same chain creates the repetition
+      // the user reported. Advance; recall retests each goal individually.
+      const recentEvidence = (phaseRecord?.evidence || []).slice(-3)
+      const recentPassingCount = recentEvidence
+        .filter((e) => typeof e?.raw?.confidence === 'number' && e.raw.confidence >= threshold)
+        .length
+      if (recentPassingCount >= 2) {
+        return {
+          action: ACTIONS.ADVANCE,
+          phase: PHASES.CAUSALITY,
+          reason: 'consistent_passing',
+        }
+      }
+      // Safety valve: this turn already passed (we'd have remediated/guided
+      // otherwise). After enough attempts, credit and advance.
+      if ((phaseRecord?.attempts || 0) >= 4) {
         return {
           action: ACTIONS.ADVANCE,
           phase: PHASES.CAUSALITY,
