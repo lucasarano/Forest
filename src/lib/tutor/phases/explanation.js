@@ -357,6 +357,60 @@ export const guide = async ({ node, evaluation, goals = [], goalsCovered = [] })
   return callText({ systemPrompt, userPrompt, temperature: 0.5, maxCompletionTokens: 380 })
 }
 
+// ── C3. Rescue Teach ─────────────────────────────────────────────
+// Called when the student has been stuck across multiple consecutive turns and
+// the teach-then-predict template is no longer landing. The runtime detects
+// the loop (≥2 consecutive give-up signals on this phase/node) and routes
+// here INSTEAD of guide/remediate. Rescue acknowledges the loop, states the
+// answer plainly, and signals movement — NO prediction question, NO new probe.
+// The runtime force-advances the phase right after this fires, bypassing the
+// goals gate, so the student is not kept circling the same question.
+export const rescueTeach = async ({ node, goals = [], goalsCovered = [] }) => {
+  const goalsGated = node?.isRoot && Array.isArray(goals) && goals.length > 0
+  const recentMsgs = (node.messages || [])
+    .slice(-10)
+    .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
+    .join('\n')
+  const systemPrompt = [
+    'You are the Rescue Agent. The student has been stuck on this concept for multiple consecutive',
+    'turns — they keep saying "I don\'t know" / "not sure" / "im lost" in response to your probes.',
+    'Re-asking, re-teaching with prediction questions, and shrinking the example have all failed',
+    'to land. The loop itself has worn the student down. Continuing to ask makes things worse.',
+    '',
+    'Your job is to BREAK THE LOOP. Drop the teach-then-quiz template entirely. Do not ask another',
+    'prediction question, "in your own words" question, or any new probe. The runtime will move on',
+    'to the next angle right after your message — your message is the LAST WORD on this question.',
+    '',
+    'Format:',
+    '1. ONE short acknowledgment that this angle is not landing — show you noticed. Examples:',
+    '   "Looks like this angle is not clicking — let me just lay it out."',
+    '   "We have been circling this — let me give you the takeaway plainly."',
+    '   "No worries — this one is genuinely tricky from how I\'ve been asking. Here it is plainly:"',
+    '   Be warm and matter-of-fact. Do NOT apologize at length, do NOT blame the student.',
+    '2. STATE THE ANSWER to the question that has been blocking them, in plain language. 2-4 short',
+    '   sentences. NO "picture a leaf cell" / "imagine X" framing. NO bullet template. NO mini-trace.',
+    '   Just the idea, said clearly, with the specific named parts when it helps. The student needs',
+    '   the takeaway, not another setup to work through.',
+    '3. End with a brief transition that signals movement — "Let\'s keep going." or "Moving on."',
+    '   DO NOT ask a prediction question. DO NOT ask them to restate. DO NOT pose a new probe.',
+    '',
+    'Hard rules:',
+    '- 60-110 words total. Brevity over walk-through.',
+    '- ZERO question marks anywhere in your response.',
+    '- Vary phrasing from earlier turns. Do NOT reuse openings or scaffolding from prior tutor',
+    '  messages in this conversation (look at the recent turns provided).',
+    '- Do NOT add reassurances about answer length ("a word or two is fine", etc.).',
+  ].join('\n')
+  const userPrompt = [
+    nodeContext(node),
+    goalsGated ? goalsBlock({ goals, goalsCovered }) : '',
+    `Last probe: ${node.phases.explanation.lastProbe || '(none)'}`,
+    `Recent turns:\n${recentMsgs}`,
+    'Write the rescue message now.',
+  ].filter(Boolean).join('\n\n')
+  return callText({ systemPrompt, userPrompt, temperature: 0.4, maxCompletionTokens: 280 })
+}
+
 // ── D. Micro-causal Check ─────────────────────────────────────────
 // Tiny guardrail before declaring explanation passed. One lightweight
 // why/how question surfaces hidden gaps in fluent-sounding answers.

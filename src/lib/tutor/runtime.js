@@ -99,6 +99,27 @@ const isComprehensionCheckAccept = ({ node, studentMessage }) => {
 
 const isQuickPrerequisiteNode = (node) => node?.detourKind === QUICK_PREREQUISITE
 
+// A student message that "looks like a give-up" — used to detect when we're in
+// a give-up loop and the teach-then-predict template is no longer landing.
+// Mirrors (but is broader than) the intent classifier's give-up patterns so the
+// runtime can count without re-running the classifier.
+const GIVEUP_CONTENT_RE = /\b(i\s*don'?t\s*know|i\s*dont\s*know|idk|dunno|no\s*idea|no\s*clue|i\s*don'?t\s*understand|i\s*dont\s*understand|i\s*don'?t\s*get\s*(it|this)|i'?m\s*lost|im\s*lost|i'?m\s*stuck|im\s*stuck|stuck|confused|not\s*sure|im\s*not\s*sure|i'?m\s*not\s*sure|pass)\b/i
+
+const isGiveupShaped = (text) => GIVEUP_CONTENT_RE.test(`${text || ''}`.trim())
+
+// Count CONSECUTIVE recent student messages on this node+phase that look like
+// give-ups. Walks from the most recent backwards and stops at the first
+// non-give-up. Used by the rescue trigger after a giveup intent is detected.
+const consecutiveGiveupCount = (node, phase) => {
+  const studentMsgs = (node?.messages || []).filter((m) => m.role === MESSAGE_ROLES.STUDENT && m.phase === phase)
+  let count = 0
+  for (let i = studentMsgs.length - 1; i >= 0; i -= 1) {
+    if (isGiveupShaped(studentMsgs[i].content)) count += 1
+    else break
+  }
+  return count
+}
+
 // Build the kwargs passed into phase agents. Goals and goalsCovered are only
 // meaningful on the root node; children never have their own goals. The
 // goalsCovered array is resolved per-phase so each phase sees its own coverage
@@ -304,6 +325,55 @@ export const runTurn = async (inputState, { studentMessage }) => {
     // "i don't understand"). Don't re-ask — TEACH. Use the phase's guide if it
     // has one, otherwise fall back to remediate with a minimal synthetic
     // evaluation so the teach-forward agent has something to work with.
+    //
+    // BUT: if the student has now produced ≥2 consecutive give-up-shaped
+    // messages on this phase, the teach-then-predict template is failing to
+    // land — each new question makes the friction worse, not better. Break
+    // the loop with a rescue: acknowledge it isn't clicking, state the answer
+    // plainly with no quiz tail, then force-advance the phase so we move on
+    // instead of circling forever.
+    const stuckCount = consecutiveGiveupCount(getActiveNode(state), phase)
+    if (stuckCount >= 2 && typeof mod.rescueTeach === 'function') {
+      logAgent('RESCUE_TEACH', { phase, node: activeNode.title, stuckCount })
+      const rescueText = await mod.rescueTeach({
+        node: getActiveNode(state),
+        ...agentKwargs(state, getActiveNode(state)),
+      })
+      logAgent('RESCUE_TEACH:OUT', { text: rescueText })
+      state = appendMessage(state, activeNode.id, {
+        role: MESSAGE_ROLES.TUTOR,
+        content: rescueText,
+        phase,
+      })
+      state = logEvent(state, 'phase_rescue', { nodeId: activeNode.id, phase, stuckCount })
+      // Charitably mark uncovered goals for THIS phase as covered so the
+      // downstream goals gate doesn't re-trip and force more probing on the
+      // same concept the rescue just spelled out. The rescue itself contains
+      // the answer; the student has had enough exposure to move on.
+      const activeNow = getActiveNode(state)
+      if (activeNow?.isRoot && Array.isArray(state.conceptGoals) && state.conceptGoals.length > 0) {
+        const allIdx = state.conceptGoals.map((_, i) => i)
+        state = markGoalsCovered(state, allIdx, phase)
+        state = logEvent(state, 'goals_covered_by_rescue', { phase, indices: allIdx })
+      }
+      // Force-advance the phase. applyDecision's ADVANCE branch does NOT run
+      // routePhase (so the goals gate is skipped) and emits the next phase's
+      // first probe. We prepend the rescue so the student sees both: the
+      // plain-language takeaway + the next probe in a single tutor turn.
+      const advanced = await applyDecision(
+        state,
+        { action: ACTIONS.ADVANCE, phase, via: 'rescue' },
+        { studentMessage, evaluation: null },
+      )
+      const combined = advanced.tutorMessage
+        ? `${rescueText}\n\n${advanced.tutorMessage}`
+        : rescueText
+      return {
+        state: advanced.state,
+        tutorMessage: combined,
+        decision: { ...(advanced.decision || {}), via: 'rescue' },
+      }
+    }
     const teach = typeof mod.guide === 'function' ? mod.guide : mod.remediate
     const syntheticEval = {
       confidence: 0,

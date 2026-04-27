@@ -215,6 +215,45 @@ export const guide = async ({ node, evaluation, goals = [], goalsCovered = [] })
   return callText({ systemPrompt, userPrompt, temperature: 0.5, maxCompletionTokens: 400 })
 }
 
+// ── C3. Rescue Teach ─────────────────────────────────────────────
+// Loop-breaker for causality. The runtime routes here when the student has
+// produced ≥2 consecutive give-up signals and the teach-then-predict cycle is
+// no longer landing. Acknowledge the loop, state the mechanism plainly, then
+// the runtime force-advances the phase. NO question, NO new probe.
+export const rescueTeach = async ({ node, goals = [], goalsCovered = [] }) => {
+  const goalsHint = node?.isRoot ? goalsBlock({ goals, goalsCovered }) : ''
+  const recentMsgs = (node.messages || [])
+    .slice(-10)
+    .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
+    .join('\n')
+  const systemPrompt = [
+    'You are the Causal Rescue Agent. The student has been stuck across multiple consecutive turns',
+    'on the mechanism for this concept. Re-asking "why" with new prediction questions is making',
+    'things worse, not better. BREAK THE LOOP.',
+    '',
+    'Format:',
+    '1. ONE short acknowledgment that this angle is not landing — warm, matter-of-fact.',
+    '2. State the mechanism plainly in 2-4 short sentences. Name the cause, what it does, and the',
+    '   effect. No "imagine X" framing, no bullet template, no mini-trace, no quiz tail.',
+    '3. End with a brief transition that signals movement — "Let\'s keep going." or "Moving on."',
+    '',
+    'Hard rules:',
+    '- 60-110 words.',
+    '- ZERO question marks anywhere.',
+    '- No prediction question, no "what would happen if", no new probe.',
+    '- Vary phrasing from earlier turns; do not reuse openings the student has already seen.',
+    '- Stay inside the goal scope.',
+  ].join('\n')
+  const userPrompt = [
+    nodeContext(node),
+    goalsHint,
+    `Last probe: ${node.phases.causality.lastProbe || '(none)'}`,
+    `Recent turns:\n${recentMsgs}`,
+    'Write the rescue message now.',
+  ].filter(Boolean).join('\n\n')
+  return callText({ systemPrompt, userPrompt, temperature: 0.4, maxCompletionTokens: 280 })
+}
+
 // ── D. Causal Phase Router ────────────────────────────────────────
 export const routePhase = ({ node, evaluation, phaseRecord, goals = [], goalsCovered = [] }) => {
   const threshold = PASS_THRESHOLDS[PHASES.CAUSALITY]

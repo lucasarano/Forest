@@ -187,6 +187,44 @@ export const guide = async ({ node, evaluation, goals = [], goalsCovered = [] })
   return callText({ systemPrompt, userPrompt, temperature: 0.4, maxCompletionTokens: 140 })
 }
 
+// ── C2. Rescue Teach ─────────────────────────────────────────────
+// Loop-breaker for transfer. The runtime routes here when the student has
+// produced ≥2 consecutive give-up signals on the transfer phase. State the
+// transferred takeaway plainly, then the runtime force-advances to recall.
+// NO question, NO new probe.
+export const rescueTeach = async ({ node, goals = [], goalsCovered = [] }) => {
+  const goalsHint = node?.isRoot ? goalsBlock({ goals, goalsCovered }) : ''
+  const recentMsgs = (node.messages || [])
+    .slice(-10)
+    .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
+    .join('\n')
+  const systemPrompt = [
+    'You are the Transfer Rescue Agent. The student has been stuck across multiple consecutive',
+    'transfer turns. Re-asking with new scenarios is making things worse, not better. BREAK THE',
+    'LOOP.',
+    '',
+    'Format:',
+    '1. ONE short acknowledgment that this angle is not landing.',
+    '2. State the transferred takeaway plainly in 2-4 short sentences — name how the SAME idea',
+    '   shows up in the new context, and why. No new scenario for them to reason through.',
+    '3. End with a brief transition — "Let\'s move on." or similar.',
+    '',
+    'Hard rules:',
+    '- 60-110 words.',
+    '- ZERO question marks anywhere.',
+    '- No new scenario, no prediction question, no "what would happen", no probe.',
+    '- Vary phrasing from earlier turns.',
+  ].join('\n')
+  const userPrompt = [
+    nodeContext(node),
+    goalsHint,
+    `Last transfer probe: ${node.phases.transfer.lastProbe || '(none)'}`,
+    `Recent turns:\n${recentMsgs}`,
+    'Write the rescue message now.',
+  ].filter(Boolean).join('\n\n')
+  return callText({ systemPrompt, userPrompt, temperature: 0.4, maxCompletionTokens: 280 })
+}
+
 // ── D. Transfer Phase Router ──────────────────────────────────────
 export const routePhase = ({ node, evaluation, goals = [], goalsCovered = [] }) => {
   const threshold = PASS_THRESHOLDS[PHASES.TRANSFER]
