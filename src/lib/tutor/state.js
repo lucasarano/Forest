@@ -42,6 +42,10 @@ export const createPhaseRecords = () => {
       evidence: [],      // list of { turnIndex, score, rationale, tag }
       lastProbe: null,   // last question the tutor asked inside this phase
       passedAt: null,
+      // Number of system-initiated subtopic offers shown for this phase on
+      // this node. Used by the phase routers to cap detour-offer loops —
+      // after one detour offer per phase, further struggle teaches inline.
+      subtopicOfferCount: 0,
     }
   }
   records[PHASES.RECALL].state = PHASE_STATES.DEFERRED
@@ -172,6 +176,21 @@ export const allGoalsCoveredForPhase = (state, phase) => {
   if (!Array.isArray(arr) || arr.length !== state.conceptGoals.length) return false
   return arr.every(Boolean)
 }
+
+// Bump the per-phase subtopic-offer counter on a node. Called when a
+// system-initiated detour offer is shown so phase routers can cap repeated
+// "I think we need a quick detour" messages on the same phase.
+export const bumpSubtopicOfferCount = (state, nodeId, phase) =>
+  withNode(state, nodeId, (node) => ({
+    ...node,
+    phases: {
+      ...node.phases,
+      [phase]: {
+        ...node.phases[phase],
+        subtopicOfferCount: (node.phases[phase]?.subtopicOfferCount || 0) + 1,
+      },
+    },
+  }))
 
 export const setRecallPlan = (state, recallPlan) => ({ ...state, recallPlan })
 

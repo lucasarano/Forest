@@ -226,7 +226,7 @@ export const rescueTeach = async ({ node, goals = [], goalsCovered = [] }) => {
 }
 
 // ── D. Transfer Phase Router ──────────────────────────────────────
-export const routePhase = ({ node, evaluation, goals = [], goalsCovered = [] }) => {
+export const routePhase = ({ node, evaluation, phaseRecord, goals = [], goalsCovered = [] }) => {
   const threshold = PASS_THRESHOLDS[PHASES.TRANSFER]
   const {
     appliedCorrectly,
@@ -252,6 +252,15 @@ export const routePhase = ({ node, evaluation, goals = [], goalsCovered = [] }) 
   if (goalsGated) {
     const allCovered = goals.every((_, i) => goalsCovered[i] === true)
     if (!allCovered) {
+      // Safety valve: after enough attempts with passing mean confidence,
+      // advance to recall instead of looping on uncovered goals.
+      if ((phaseRecord?.attempts || 0) >= 4 && (phaseRecord?.confidence || 0) >= threshold) {
+        return {
+          action: ACTIONS.ADVANCE,
+          phase: PHASES.TRANSFER,
+          reason: 'attempts_with_passing_confidence',
+        }
+      }
       return { action: ACTIONS.CONTINUE, phase: PHASES.TRANSFER, reason: 'goals_not_covered' }
     }
   }

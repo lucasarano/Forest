@@ -34,6 +34,11 @@ const goalsBlock = ({ goals = [], goalsCovered = [] } = {}) => {
     'Internal coverage checklist (what the student eventually needs to demonstrate —',
     'NOT a list to read aloud to the student, NOT a question bank):',
     ...lines,
+    '',
+    'PRIORITIZE uncovered items (those marked [ ]). If multiple are uncovered, rotate',
+    'between them across turns — do NOT keep asking about the same goal angle the',
+    'student already demonstrated. If all are covered, ask one consolidating question',
+    'that ties two of them together rather than re-asking any one of them.',
   ].join('\n')
 }
 
@@ -456,7 +461,14 @@ export const routePhase = ({ node, evaluation, micro, phaseRecord, goals = [], g
   const { confidence, circular, parroting, misconception, suspectedPrerequisiteGap } = evaluation
 
   // 1. Subtopic only as a last resort — persistent struggle with a named gap.
+  //    Cap to ONE system-initiated detour offer per phase per node. Beyond
+  //    that, further "I think we need a quick detour" messages stack up and
+  //    overwhelm the student instead of helping; switch to GUIDE so the tutor
+  //    teaches inline rather than offering yet another branch.
   if (suspectedPrerequisiteGap && phaseRecord.attempts >= 3 && confidence < threshold) {
+    if ((phaseRecord.subtopicOfferCount || 0) >= 1) {
+      return { action: ACTIONS.GUIDE, phase: PHASES.EXPLANATION, downgraded: 'subtopic_cap' }
+    }
     return {
       action: ACTIONS.OPEN_SUBTOPIC,
       reason: suspectedPrerequisiteGap,
@@ -490,10 +502,24 @@ export const routePhase = ({ node, evaluation, micro, phaseRecord, goals = [], g
   // 5. If this concept has required learning goals and not all are covered yet,
   //    don't advance — keep probing on the uncovered goals. Confidence alone is
   //    not enough; depth requires all goals demonstrated.
+  //
+  //    SAFETY VALVE: after enough probe attempts WITH a passing mean
+  //    confidence, charitably advance even if some goals haven't been
+  //    explicitly credited. Otherwise the student can give correct answer
+  //    after correct answer and never move on because the per-turn
+  //    goalsAddressed credit is strict by design. The recall phase will
+  //    retest each goal individually, so advancing is safe.
   const goalsGated = node?.isRoot && Array.isArray(goals) && goals.length > 0
   if (goalsGated) {
     const allCovered = goals.every((_, i) => goalsCovered[i] === true)
     if (!allCovered) {
+      if (phaseRecord.attempts >= 4 && phaseRecord.confidence >= threshold) {
+        return {
+          action: ACTIONS.ADVANCE,
+          phase: PHASES.EXPLANATION,
+          reason: 'attempts_with_passing_confidence',
+        }
+      }
       return { action: ACTIONS.CONTINUE, phase: PHASES.EXPLANATION, reason: 'goals_not_covered' }
     }
   }

@@ -24,6 +24,7 @@ import {
 } from './constants.js'
 import {
   appendMessage,
+  bumpSubtopicOfferCount,
   createInitialState,
   getActiveNode,
   logEvent,
@@ -195,6 +196,22 @@ export const runTurn = async (inputState, { studentMessage }) => {
   let state = { ...inputState, turnIndex: inputState.turnIndex + 1, lastTurnAt: new Date().toISOString() }
   const activeNode = getActiveNode(state)
   if (!activeNode) throw new Error('No active node')
+
+  // If a subtopic offer is still pending and the student sent a normal message
+  // instead of clicking "Dive in" / "Skip", clear the stale offer. Otherwise
+  // the next OPEN_SUBTOPIC proposal stacks a fresh offer on top of the old one
+  // and the student sees back-to-back "I think we need a quick detour"
+  // messages — which the conversation transcript made clear is overwhelming.
+  // Treat the typed message as an implicit "keep going" choice.
+  if (state.offer) {
+    const stale = state.offer
+    state = setOffer(state, null)
+    state = logEvent(state, 'subtopic_offer_implicit_skip', {
+      parentId: stale.parentId,
+      title: stale.title,
+      blockedPhase: stale.blockedPhase,
+    })
+  }
 
   // Record the student's utterance on the active node & active phase.
   state = appendMessage(state, activeNode.id, {
@@ -753,6 +770,7 @@ const applyDecision = async (inputState, decision, { studentMessage, evaluation 
         triggerProbe: active.phases?.[phase]?.lastProbe || '',
       }
       state = setOffer(state, offer)
+      state = bumpSubtopicOfferCount(state, active.id, phase)
       const tutorMessage = [
         `I think we need a quick detour: **${subtopic.title}**.`,
         `Why: ${subtopic.reason}`,

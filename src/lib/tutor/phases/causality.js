@@ -274,6 +274,11 @@ export const routePhase = ({ node, evaluation, phaseRecord, goals = [], goalsCov
     && phaseRecord.attempts >= 2
     && confidence < threshold
   ) {
+    // Cap detour offers per phase — after one, teach inline instead of
+    // stacking another "I think we need a quick detour" on the student.
+    if ((phaseRecord.subtopicOfferCount || 0) >= 1) {
+      return { action: ACTIONS.GUIDE, phase: PHASES.CAUSALITY, downgraded: 'subtopic_cap' }
+    }
     return {
       action: ACTIONS.OPEN_SUBTOPIC,
       reason: suspectedPrerequisiteGap,
@@ -295,6 +300,15 @@ export const routePhase = ({ node, evaluation, phaseRecord, goals = [], goalsCov
   if (goalsGated) {
     const allCovered = goals.every((_, i) => goalsCovered[i] === true)
     if (!allCovered) {
+      // Safety valve: after enough attempts with passing mean confidence,
+      // advance instead of looping on uncovered goals. Recall retests each.
+      if (phaseRecord.attempts >= 4 && phaseRecord.confidence >= threshold) {
+        return {
+          action: ACTIONS.ADVANCE,
+          phase: PHASES.CAUSALITY,
+          reason: 'attempts_with_passing_confidence',
+        }
+      }
       return { action: ACTIONS.CONTINUE, phase: PHASES.CAUSALITY, reason: 'goals_not_covered' }
     }
   }
