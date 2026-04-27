@@ -236,6 +236,24 @@ export const routePhase = ({ node, evaluation, phaseRecord, goals = [], goalsCov
   } = evaluation
   const outcomeRightButThin = correctOutcomeButMissingWhy || appliedCorrectly >= 0.65
 
+  // Loop-break: re-asking "but why" on the same outcome the student already
+  // produced makes the chat feel unforgiving. If the evaluator has flagged
+  // missing-why on this turn AND on at least one of the previous two turns,
+  // the student has shown the right transferred outcome more than once and
+  // further drilling here is not landing. Advance — recall will retest the
+  // why directly per goal.
+  const recentEvidence = (phaseRecord?.evidence || []).slice(-3)
+  const recentMissingWhyCount = recentEvidence
+    .filter((e) => e?.raw?.correctOutcomeButMissingWhy === true)
+    .length
+  if (correctOutcomeButMissingWhy && recentMissingWhyCount >= 2) {
+    return {
+      action: ACTIONS.ADVANCE,
+      phase: PHASES.TRANSFER,
+      reason: 'missing_why_loop_break',
+    }
+  }
+
   if (exposesCausalWeakness && confidence < threshold && outcomeRightButThin) {
     return { action: ACTIONS.GUIDE, phase: PHASES.TRANSFER, reason: 'missing_why' }
   }
@@ -252,9 +270,13 @@ export const routePhase = ({ node, evaluation, phaseRecord, goals = [], goalsCov
   if (goalsGated) {
     const allCovered = goals.every((_, i) => goalsCovered[i] === true)
     if (!allCovered) {
-      // Safety valve: after enough attempts with passing mean confidence,
-      // advance to recall instead of looping on uncovered goals.
-      if ((phaseRecord?.attempts || 0) >= 4 && (phaseRecord?.confidence || 0) >= threshold) {
+      // Safety valve: this turn already passed confidence (or we'd have
+      // remediated above). After enough attempts, credit the transfer and
+      // advance — generating yet another scenario when the student just
+      // demonstrated the skill is what feels like "the same question again".
+      // Recall retests each goal individually, so any remaining gap surfaces
+      // there rather than being papered over.
+      if ((phaseRecord?.attempts || 0) >= 4) {
         return {
           action: ACTIONS.ADVANCE,
           phase: PHASES.TRANSFER,

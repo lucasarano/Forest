@@ -36,6 +36,52 @@ test('transfer router still reopens causality when the transferred outcome is wr
   assert.equal(decision.targetPhase, PHASES.CAUSALITY)
 })
 
+test('transfer router breaks the missing_why loop after repeated turns and advances', () => {
+  const decision = routeTransfer({
+    node: { isRoot: false },
+    evaluation: {
+      appliedCorrectly: 0.9,
+      confidence: 0.5,
+      correctOutcomeButMissingWhy: true,
+      exposesCausalWeakness: true,
+    },
+    phaseRecord: {
+      attempts: 3,
+      confidence: 0.5,
+      evidence: [
+        { raw: { correctOutcomeButMissingWhy: true } },
+        { raw: { correctOutcomeButMissingWhy: false } },
+        { raw: { correctOutcomeButMissingWhy: true } },
+      ],
+    },
+  })
+
+  assert.equal(decision.action, ACTIONS.ADVANCE)
+  assert.equal(decision.reason, 'missing_why_loop_break')
+})
+
+test('transfer router advances on uncovered goals once attempts pile up and this turn passes', () => {
+  const decision = routeTransfer({
+    node: { isRoot: true },
+    evaluation: {
+      appliedCorrectly: 0.85,
+      confidence: 0.8,
+      correctOutcomeButMissingWhy: false,
+      exposesCausalWeakness: false,
+    },
+    phaseRecord: {
+      attempts: 4,
+      confidence: 0.55,
+      evidence: [],
+    },
+    goals: ['goal-a', 'goal-b'],
+    goalsCovered: [true, false],
+  })
+
+  assert.equal(decision.action, ACTIONS.ADVANCE)
+  assert.equal(decision.reason, 'attempts_with_passing_confidence')
+})
+
 test('subtopic state preserves quick prerequisite metadata', () => {
   const initial = createInitialState({
     concept: {

@@ -518,6 +518,24 @@ export const runTurn = async (inputState, { studentMessage }) => {
   })
   logAgent('PHASE_ROUTER', { phase, proposal: proposal.action, reason: proposal.reason || null })
 
+  // Charitable goals coverage when transfer advances via an escape valve
+  // (missing-why loop-break or attempt cap). The student demonstrated the
+  // transferred outcome enough times that re-asking is hurting more than
+  // helping; mark transfer goals covered so UI/state stay consistent. Recall
+  // re-tests each goal individually, so any remaining gap will still surface.
+  if (
+    proposal.action === ACTIONS.ADVANCE
+    && phase === PHASES.TRANSFER
+    && (proposal.reason === 'missing_why_loop_break' || proposal.reason === 'attempts_with_passing_confidence')
+    && getActiveNode(state)?.isRoot
+    && Array.isArray(state.conceptGoals)
+    && state.conceptGoals.length > 0
+  ) {
+    const allIdx = state.conceptGoals.map((_, i) => i)
+    state = markGoalsCovered(state, allIdx, phase)
+    state = logEvent(state, 'goals_covered_by_transfer_escape', { phase, reason: proposal.reason })
+  }
+
   // 4. Global router applies policy caps.
   const decision = routeGlobal({ state, activeNode: getActiveNode(state), proposal })
   logAgent('GLOBAL_ROUTER', {
