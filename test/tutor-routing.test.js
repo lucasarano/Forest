@@ -3,7 +3,7 @@ import test from 'node:test'
 
 import { ACTIONS, PHASES } from '../src/lib/tutor/constants.js'
 import { routePhase as routeTransfer } from '../src/lib/tutor/phases/transfer.js'
-import { createInitialState, getActiveNode, pushSubtopic } from '../src/lib/tutor/state.js'
+import { createInitialState, getActiveNode, markGoalsCovered, pushSubtopic } from '../src/lib/tutor/state.js'
 
 test('transfer router asks an in-place why follow-up when outcome is right but mechanism is thin', () => {
   const decision = routeTransfer({
@@ -80,6 +80,32 @@ test('transfer router advances on uncovered goals once attempts pile up and this
 
   assert.equal(decision.action, ACTIONS.ADVANCE)
   assert.equal(decision.reason, 'attempts_with_passing_confidence')
+})
+
+test('flat goalsCovered reflects the union of all phase coverage arrays', () => {
+  const initial = createInitialState({
+    concept: {
+      id: 'concept-1',
+      title: 'Photosynthesis',
+      seedQuestion: 'How do plants make food from light?',
+      conceptGoals: [
+        'Inputs and outputs of photosynthesis',
+        'Role of chlorophyll',
+        'Light reactions and Calvin cycle',
+      ],
+    },
+  })
+
+  // Mark goal 0 covered in explanation, goal 1 in causality, goal 2 in transfer.
+  let state = markGoalsCovered(initial, [0], PHASES.EXPLANATION)
+  state = markGoalsCovered(state, [1], PHASES.CAUSALITY)
+  state = markGoalsCovered(state, [2], PHASES.TRANSFER)
+
+  // The flat goalsCovered (read by the UI) should show 3/3 covered, not 1/3.
+  assert.deepEqual(state.goalsCovered, [true, true, true])
+  assert.equal(state.goalsCoveredByPhase[PHASES.EXPLANATION][0], true)
+  assert.equal(state.goalsCoveredByPhase[PHASES.CAUSALITY][1], true)
+  assert.equal(state.goalsCoveredByPhase[PHASES.TRANSFER][2], true)
 })
 
 test('subtopic state preserves quick prerequisite metadata', () => {

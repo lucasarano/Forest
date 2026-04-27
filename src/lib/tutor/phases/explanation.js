@@ -99,13 +99,25 @@ export const probe = async ({ node, mode = 'initial', goals = [], goalsCovered =
         + ' Abstract "in your own words" again is not allowed. If earlier attempts failed,'
         + ' shrink the example (fewer parts, simpler case).',
     '',
+    attempts > 0
+      ? [
+          'CONVERSATIONAL LEAD-IN — REQUIRED when there are prior turns:',
+          'Begin with ONE short clause (≤12 words, no question mark) that reacts to what the student',
+          'just said. Affirm what was right, name a specific phrase they got, or note where they were',
+          'close. Examples: "Right — glucose is the output." / "Yep, that\'s the role of chlorophyll."',
+          '/ "Close — the inputs are right." Do NOT use "Good job!"-style hollow praise. Do NOT',
+          'restate the entire prior question. Do NOT lecture. After the lead-in, write the new',
+          'question on the next line.',
+          '',
+        ].join('\n')
+      : '',
     'Rules:',
     '- Do not teach, do not give the answer, do not list features.',
     '- Accept word-based descriptions of mechanism. Never require formal notation.',
     '- If — and only if — the goal is quantitative and you use math, tell the student they can',
     '  answer in plain words describing the steps.',
     '- Short correct answers are fine.',
-    '- Under 55 words. ONE question. Nothing else.',
+    '- Under 70 words total (including the lead-in if any). ONE question. Nothing else.',
   ].filter(Boolean).join('\n')
   const userPrompt = [
     nodeContext(node),

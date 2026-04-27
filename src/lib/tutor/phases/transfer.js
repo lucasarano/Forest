@@ -54,7 +54,14 @@ export const probe = async ({ node, mode = 'near', goals = [], goalsCovered = []
     'process step by step — rather than writing out raw math. The goal is understanding, not',
     'notation.',
     '',
-    'One question, under 60 words, no teaching, no hints.',
+    'CONVERSATIONAL LEAD-IN — REQUIRED when the recent turns show prior student answers:',
+    'Begin with ONE short clause (≤12 words, no question mark) that reacts to what the student',
+    'just said. Affirm a correct piece or note where they were close. Examples: "Right — that',
+    'maps over." / "Yes, the same idea applies here." Do NOT use hollow praise ("Nice work!").',
+    'Do NOT restate the prior question. Do NOT lecture. After the lead-in, write the new question',
+    'on the next line.',
+    '',
+    'One question, under 75 words total (including the lead-in), no teaching, no hints.',
   ].join('\n')
   const userPrompt = [
     nodeContext(node),

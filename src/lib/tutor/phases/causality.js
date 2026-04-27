@@ -59,8 +59,15 @@ export const probe = async ({ node, mode = 'initial', goals = [], goalsCovered =
     'Avoid purely abstract "why does this happen?" with no scenario. The student should be',
     'reasoning about something specific they can picture.',
     '',
+    'CONVERSATIONAL LEAD-IN — REQUIRED when the recent turns show prior student answers:',
+    'Begin with ONE short clause (≤12 words, no question mark) that reacts to what the student',
+    'just said. Affirm a correct piece, name what they got, or note where they were close.',
+    'Examples: "Right — energy comes from the light reactions." / "Yes, the mechanism stalls there."',
+    'Do NOT use hollow praise ("Great job!"). Do NOT restate the prior question. Do NOT lecture.',
+    'After the lead-in, write the new question on the next line.',
+    '',
     'Tell the student they can answer in words — no formal math required.',
-    'Under 55 words. ONE question. No teaching. No multi-part questions.',
+    'Under 70 words total (including the lead-in). ONE question. No teaching. No multi-part questions.',
   ].join('\n')
   const userPrompt = [
     nodeContext(node),

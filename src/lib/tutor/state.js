@@ -160,11 +160,15 @@ export const markGoalsCovered = (state, indices, phase = PHASES.EXPLANATION) => 
 
   const nextCoverageByPhase = { ...coverageByPhase, [phase]: nextPhaseArr }
 
-  // Keep the legacy flat `goalsCovered` mirrored to explanation coverage for UI.
-  const flatCurrent = Array.isArray(state.goalsCovered) && state.goalsCovered.length === state.conceptGoals.length
-    ? state.goalsCovered
-    : state.conceptGoals.map(() => false)
-  const nextFlat = phase === PHASES.EXPLANATION ? nextPhaseArr.slice() : flatCurrent
+  // The flat `state.goalsCovered` is the ANY-phase union — a goal counts as
+  // covered in the UI as soon as the student demonstrates it in any of the
+  // explanation, causality, or transfer phases. Without this, goals shown to
+  // the student stay "uncovered" even after they were addressed in causality
+  // or transfer, which makes progress feel broken.
+  const explArr = nextCoverageByPhase[PHASES.EXPLANATION] || state.conceptGoals.map(() => false)
+  const causArr = nextCoverageByPhase[PHASES.CAUSALITY] || state.conceptGoals.map(() => false)
+  const tranArr = nextCoverageByPhase[PHASES.TRANSFER] || state.conceptGoals.map(() => false)
+  const nextFlat = state.conceptGoals.map((_, i) => explArr[i] === true || causArr[i] === true || tranArr[i] === true)
 
   return { ...state, goalsCovered: nextFlat, goalsCoveredByPhase: nextCoverageByPhase }
 }
